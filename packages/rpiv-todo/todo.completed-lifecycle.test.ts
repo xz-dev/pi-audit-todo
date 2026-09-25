@@ -1,9 +1,7 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { createMockCtx, createMockPi, createMockUI } from "@juicesharp/rpiv-test-utils";
+import { createMockCtx, createMockPi } from "@juicesharp/rpiv-test-utils";
 import { describe, expect, it, vi } from "vitest";
 import registerTodo from "./index.ts";
-import { commitState, setActiveRenderSession } from "./state/store.ts";
-import { TodoOverlay } from "./todo-overlay.ts";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -45,34 +43,12 @@ async function completedParent() {
 }
 
 describe("completed todo visibility", () => {
-	it("hides displayed completions when the foreground session starts its next agent run", async () => {
-		const { emit, widget } = await completedParent();
-		await emit("agent_start");
-		expect(widget.render(100)).toEqual([]);
-	});
-
-	it("does not let a child session's agent start hide foreground completions", async () => {
+	it("keeps a recent completion when either a child or the foreground starts a run", async () => {
 		const { emit, widget } = await completedParent();
 		const child = createMockCtx({ hasUI: true, sessionId: "child" });
 		await emit("agent_start", child);
 		expect(widget.render(100).join("\n")).toContain("finished parent task");
 		await emit("agent_start");
-		expect(widget.render(100)).toEqual([]);
-	});
-
-	it("unregisters the panel when its last displayed completion is hidden", () => {
-		setActiveRenderSession("parent");
-		commitState("parent", {
-			tasks: [{ id: 1, subject: "finished", status: "completed" }],
-			nextId: 2,
-		});
-		const overlay = new TodoOverlay();
-		const ui = createMockUI() as unknown as ExtensionUIContext;
-		overlay.setUICtx(ui);
-		overlay.update();
-		mount(ui).render(100);
-		overlay.hideCompletedTasksFromPreviousTurn();
-		expect(overlay.isRegistered()).toBe(false);
-		expect(ui.setWidget).toHaveBeenLastCalledWith("rpiv-todos", undefined);
+		expect(widget.render(100).join("\n")).toContain("finished parent task");
 	});
 });
