@@ -161,7 +161,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		const originalBoard = getState(sid(job.ctx));
 		const lines: string[] = [];
 		const accepted: number[] = [];
-		let changed = false;
+		const applied = new Set<number>();
 		for (const choice of decisions) {
 			const before = snapshot.items.get(choice.id);
 			const original = job.history.items.get(choice.id);
@@ -172,7 +172,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 					: []),
 			]);
 			const staleDep = [...deps].some(
-				(id) => snapshot.items.get(id)?.revision !== job.history.items.get(id)?.revision,
+				(id) => applied.has(id) || snapshot.items.get(id)?.revision !== job.history.items.get(id)?.revision,
 			);
 			if (!cohortCurrent || !before || before.revision !== original?.revision || staleDep) {
 				lines.push(`#${choice.id} skipped: newer board information.`);
@@ -203,7 +203,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 					lines.push(`#${choice.id} not changed: board rejected the proposed operation or it had no effect.`);
 					continue;
 				}
-				changed = true;
+				applied.add(choice.id);
 				accepted.push(choice.id);
 				lines.push(
 					`#${choice.id} ${changes(
@@ -215,7 +215,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 				lines.push(`#${choice.id} write unverified; check the persisted board before retrying.`);
 			}
 		}
-		if (changed)
+		if (applied.size)
 			void refresh().catch(() => warn("TODO audit updated the board, but its panel could not be refreshed."));
 		const final = history();
 		const reviews: Reviewed[] = accepted.flatMap((id) => {
