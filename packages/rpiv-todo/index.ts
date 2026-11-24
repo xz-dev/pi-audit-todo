@@ -21,7 +21,8 @@
 
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
-import { COLLAPSE_KEY_OFF, resolveCollapseKey } from "./config.ts";
+import { type AuditOptions, installTodoAudit } from "./audit/extension.ts";
+import { COLLAPSE_KEY_OFF, loadConfig, resolveCollapseKey } from "./config.ts";
 import { I18N_NAMESPACE } from "./state/i18n-bridge.ts";
 import { replayFromBranch } from "./state/replay.ts";
 import {
@@ -125,7 +126,11 @@ function formatError(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
 }
 
-export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = () => import("./todo-overlay.ts")) {
+export default function (
+	pi: ExtensionAPI,
+	importOverlay: TodoOverlayImporter = () => import("./todo-overlay.ts"),
+	auditOptions: AuditOptions = { enabled: loadConfig().audit?.enabled !== false },
+) {
 	let todoOverlay: TodoOverlay | undefined;
 	const loadTodoOverlay = makeTodoOverlayLoader(importOverlay);
 	let uiCtx: ExtensionUIContext | undefined;
@@ -143,7 +148,8 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 		todoOverlay.update();
 	}
 
-	registerTodoTool(pi);
+	let checkpointAudit: ((sessionId: string) => void) | undefined;
+	registerTodoTool(pi, (sessionId) => checkpointAudit?.(sessionId));
 	registerTodosCommand(pi);
 
 	// Collapse/expand hotkey for the todo overlay. The key is resolved once at
@@ -279,4 +285,5 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 	// the first real update to retry. unref avoids holding an embedder open.
 	const prewarmTimer = setTimeout(() => void loadTodoOverlay().catch(() => undefined), PREWARM_DELAY_MS);
 	prewarmTimer.unref?.();
+	checkpointAudit = installTodoAudit(pi, updateTodoOverlay, auditOptions);
 }

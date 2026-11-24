@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, validateGuidanceFields } from "./config.ts";
 import { formatStatusLabel, t } from "./state/i18n-bridge.ts";
 import { selectTasksByStatus, selectTodoCounts, selectVisibleTasks } from "./state/selectors.ts";
+import type { TaskState } from "./state/state.ts";
 import { applyTaskMutation, changesState } from "./state/state-reducer.ts";
 import { commitState, getRenderState, getState, sid } from "./state/store.ts";
 import { prepareTodoArguments } from "./tool/normalize-params.ts";
@@ -25,6 +26,7 @@ import {
 	ERR_REQUIRES_INTERACTIVE,
 	MSG_NO_TODOS,
 	STATE_ENTRY_TYPE,
+	type TaskAction,
 	type TaskMutationParams,
 	TOOL_LABEL,
 	TOOL_NAME,
@@ -67,7 +69,30 @@ export const DEFAULT_PROMPT_GUIDELINES: string[] = [
 	"Subject must be short and imperative (e.g. 'Research existing tool'); description is for long-form detail. activeForm is a present-continuous label shown while in_progress.",
 ];
 
-export function registerTodoTool(pi: ExtensionAPI): void {
+// Keep check, persistence and publication in the same synchronous lane as the tool.
+export function commitTodo(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	sessionId: string,
+	action: TaskAction,
+	params: TaskMutationParams,
+	isCurrent: (state: TaskState) => boolean = () => true,
+	beforeCommit: () => void = () => {},
+) {
+	const before = getState(sessionId);
+	if (!isCurrent(before)) return undefined;
+	const { state, op } = applyTaskMutation(before, action, params);
+	const toolResult = buildToolResult(action, params, state, op);
+	// Nested tool calls have no standalone tool result. Persist the canonical
+	// snapshot before publishing the live state, for both tool and audit writes.
+	if (changesState(op)) {
+		beforeCommit();
+		pi.appendEntry(STATE_ENTRY_TYPE, toolResult.details);
+		commitState(sessionId, state);
+	}
+	return { before, state, op, toolResult };
+}
+
+export function registerTodoTool(pi: ExtensionAPI, beforeCommit?: (sessionId: string) => void): void {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
 	pi.registerTool({
 		name: TOOL_NAME,
@@ -81,15 +106,9 @@ export function registerTodoTool(pi: ExtensionAPI): void {
 		prepareArguments: prepareTodoArguments,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = applyTaskMutation(getState(sid(ctx)), params.action, params as TaskMutationParams);
-			commitState(sid(ctx), result.state);
-			const toolResult = buildToolResult(params.action, params as TaskMutationParams, result.state, result.op);
-			// Persist the snapshot as a custom entry on the calling session's branch, however the
-			// tool was reached: a call made through another tool (`ctx.executeTool`, e.g. codemode)
-			// never lands as a standalone `toolResult`, so its `details` alone would not survive
-			// replay. Pi's own codemode persists its `store()` the same way.
-			if (changesState(result.op)) pi.appendEntry(STATE_ENTRY_TYPE, toolResult.details);
-			return toolResult;
+			const id = sid(ctx);
+			return commitTodo(pi, id, params.action, params as TaskMutationParams, undefined, () => beforeCommit?.(id))!
+				.toolResult;
 		},
 
 		// renderCall reflects the FOREGROUND slot, not the calling session's. Pi's
