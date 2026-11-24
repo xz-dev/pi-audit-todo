@@ -2,6 +2,7 @@ import type { GuidanceFields } from "@juicesharp/rpiv-config";
 import { loadJsonConfigWithLegacyFallback, validateGuidanceFields } from "@juicesharp/rpiv-config";
 
 interface TodoConfig {
+	audit?: { enabled?: boolean };
 	guidance?: GuidanceFields;
 	maxWidgetLines?: number;
 	/**

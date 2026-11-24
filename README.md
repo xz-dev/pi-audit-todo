@@ -1,128 +1,37 @@
-# @juicesharp/rpiv-todo
+# pi-audit-todo
 
-[![npm version](https://img.shields.io/npm/v/@juicesharp/rpiv-todo.svg)](https://www.npmjs.com/package/@juicesharp/rpiv-todo)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-<div align="center">
-  <a href="https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo">
-    <img src="https://raw.githubusercontent.com/juicesharp/rpiv-mono/main/packages/rpiv-todo/docs/cover.png" alt="rpiv-todo — a persistent todo overlay for Pi Agent, showing a task panel with completed, in-progress, and pending rows" width="50%">
-  </a>
-</div>
-
-Give the model a task list you can see. `rpiv-todo` adds a `todo` tool, a
-`/todos` command, and a live panel above the editor to
-[Pi Agent](https://github.com/badlogic/pi-mono), so you always know what the
-agent is doing now, what it finished, and what is queued. The list is rebuilt
-from the conversation itself, so it survives `/reload` and compaction — useful
-on long research → design → implement sessions.
+A persistent TODO board for [Pi](https://github.com/earendil-works/pi), with private background reviews that keep the board up to date without restarting the main agent. It combines the `rpiv-todo` tool, `/todos` command, and live panel with audited writeback. It does **not** use or install JEV. Private reviews use the main session’s selected model and can incur inference cost.
 
 ## Install
 
+Tested with Pi **1.5.2** and **1.6.0**, including the `1.6.0-xz.437.1` build. Install the package and restart Pi:
+
 ```sh
-pi install npm:@juicesharp/rpiv-todo
+pi install git:github.com/xz-dev/pi-audit-todo
 ```
 
-Restart your Pi session.
+This plugin **replaces** `rpiv-todo`; disable or remove the old TODO extension and `pi-jev-todo-audit` before loading it. Do not load two providers of `todo` or `/todos`. Existing TODO snapshots replay under the same keys; old JEV opinions do not count as reviews. You can keep Continue Watchdog, Reflect Watchdog, or JEV installed independently for other uses. The new package does not modify their settings, commands, or lifecycle.
 
-## Quick start
+## What runs in the background
 
-Run `/todos` after the restart to confirm the extension is loaded. On a fresh
-session it prints:
+| Trigger | What happens |
+| --- | --- |
+| A completed main loop ends with **at least two** `in_progress` tasks | Start a distinct private review for each task that just became active. The review explains why the whole group needs to be active or corrects stale entries. Two is a review threshold, not a maximum. An unchanged group does not retrigger. |
+| An item goes **over 30 main loops or over 30 minutes of observed ordinary work** without change or review | Review that item: update supported fields or report a concrete reason to keep it. Pending tasks are included; an unchanged completed or deleted revision is reviewed once. `todo list` and no-op writes do not refresh it. |
 
-```
-No todos yet. Ask the agent to add some!
-```
+Working time is not wall-clock age. It runs while the main session or a participating ordinary child is working, counts overlap once, and pauses when everyone is idle. Private audit work and offline time do not count. Child processes must load the plugin in the same inherited activity domain to be observed; unrelated and unobservable sessions are not counted. Child loop counts never replace the main loop count.
 
-Then ask for something with several steps — "add a repository layer with tests,
-and track it as todos". The model calls `todo` and the panel appears above your
-input box, updating as work moves:
+The reviewer reads the parent’s effective session context in a private fork. It can make a bounded number of read-only evidence lookups and submit a structured result, but cannot execute the work or write the parent board directly. The parent compares branch, board generation, and item revisions before applying any update. It then reports **what was actually changed**, kept with a reason, or skipped. The changelog enters the original conversation as plugin feedback, not as instructions or user approval. It does not start a new turn.
 
-![Todo overlay panel: a Todos (2/7) heading above two struck-through completed rows, one in-progress row with its activity label, and four pending rows](https://raw.githubusercontent.com/juicesharp/rpiv-mono/main/packages/rpiv-todo/docs/overlay.jpg)
+## Controls
 
-Press `ctrl+shift+t` to collapse the panel to its heading plus a one-line hint,
-and again to expand it. Clicking the heading row toggles it too. Run `/todos` at
-any time to print the full list grouped by status.
+- `/todos`: Show the current board. The live panel retains the three latest completions and keeps active tasks above the focus window.
+- `/jev-audit`: Legacy command name; checks existing maintenance eligibility, not the old classifier. The `full` argument is retired.
+- `/cancel-todo-audit`: Cancel only this session’s queued and running reviews. It does not stop the main agent or another watchdog.
+- To disable automatic maintenance but keep the board, set `{"audit":{"enabled":false}}` in `${XDG_CONFIG_HOME:-$HOME/.config}/rpiv-todo/config.json` and reload Pi. `PI_AUDIT_TODO_DISABLE=1` also disables it.
 
-## What you get
+Deletion or reactivation by audit requires a narrow, explicit user instruction issued for the existing task, e.g. `Delete TODO #7` or `Mark #7 in_progress`. Completion requires a matching user directive or an explicit whole-item report such as `Task #7 completed`. The normal `todo` tool remains available for direct, user-directed bookkeeping. A model judgment is not independent verification of completion. Keep sensitive files outside the permitted scope; a remote model can process the fork’s inherited context.
 
-- **The plan stays on screen.** A panel above the editor shows every task with a
-  status glyph, the label of whatever is in progress, and a `Todos (done/total)`
-  heading — you never have to ask the agent where it is.
-- **Tasks survive `/reload` and compaction.** Every change records the full
-  post-mutation snapshot on the session branch, including changes made from a
-  codemode script, and the list is replayed from there. No disk writes, nothing
-  to lose.
-- **Finished work gets out of the way.** Completed rows stay visible until 3
-  newer completions displace them — the overlay keeps only the freshest
-  finished work and drops stale completions immediately, without waiting for a
-  turn boundary. The panel disappears entirely when the list empties.
-- **Every active task stays on screen.** All `in_progress` rows are hoisted
-  into an active strip under the heading — parallel work never hides behind
-  the overflow markers, and excess actives collapse into `… N more active`.
-- **The overlay never eats your terminal.** Past the row budget it shows a
-  focused window anchored at the first unfinished task, backfilling from earlier
-  tasks so the window stays full, with `… N earlier` / `… N later` markers for
-  what it hid.
-- **The agent can sequence work, not just list it.** `blockedBy` dependencies are
-  validated before anything is written — dangling ids, deleted dependencies,
-  self-blocks, and cycles are all rejected.
-- **Parallel sessions stay separate.** Task state is keyed by session, so a
-  detached or child session can neither read nor overwrite the foreground list.
-- **Localized UI, no setup required.** Nine locales ship with the package and
-  activate when [`@juicesharp/rpiv-i18n`](https://www.npmjs.com/package/@juicesharp/rpiv-i18n)
-  is installed; without it, everything falls back to English.
+## Source and license
 
-## Configuration
-
-Optional. Create `~/.config/rpiv-todo/config.json` (or
-`$XDG_CONFIG_HOME/rpiv-todo/config.json` if you set that variable):
-
-```json
-{
-  "maxWidgetLines": 8,
-  "collapseKey": "alt+t"
-}
-```
-
-| Setting | What it does | Default |
-| --- | --- | --- |
-| `maxWidgetLines` | Content rows the overlay may use, heading included. Minimum `3`. `0` turns the overlay off. Applies on the next repaint. Pi's tool-output expansion mode shows all tasks. | `12` |
-| `collapseKey` | Key that collapses and expands the panel, in Pi keybinding form (`alt+o`, `ctrl+shift+t`). Set `"off"` to register no shortcut. Needs `/reload` to rebind. | `"ctrl+shift+t"` |
-| `guidance` | Replaces the built-in instructions the extension gives the model about when and how to use the todo list. Needs `/reload`. | _(built-ins)_ |
-
-A missing or malformed file falls back to these defaults. `rpiv-todo` only reads
-this file — it never writes one. Full semantics:
-[Configuration](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-todo/docs/configuration.md).
-
-## Reference
-
-- [`todo` tool reference](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-todo/docs/tool-schema.md)
-  — every `todo` parameter, the status machine, the response envelope, and the
-  exact error strings.
-- [Configuration](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-todo/docs/configuration.md)
-  — config file resolution, option validation rules, and the accepted keybinding
-  grammar.
-- [Overlay and `/todos`](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-todo/docs/overlay.md)
-  — overlay lifecycle, glyphs, overflow behavior, `/todos` output, and
-  localization.
-
-## Requirements
-
-- A Pi Agent host. No API key, no model selection, no native dependencies.
-- An interactive session for the panel and `/todos`. Headless runs still get the
-  `todo` tool; nothing is rendered.
-- [`@juicesharp/rpiv-i18n`](https://www.npmjs.com/package/@juicesharp/rpiv-i18n)
-  is an optional peer — install it for a localized UI, skip it for English.
-
-## Related
-
-- [`@juicesharp/rpiv-i18n`](https://www.npmjs.com/package/@juicesharp/rpiv-i18n)
-  ([source](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-i18n))
-  — localizes this extension's UI chrome and adds a `/languages` picker.
-- [`@juicesharp/rpiv-pi`](https://www.npmjs.com/package/@juicesharp/rpiv-pi)
-  ([source](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-pi))
-  — the umbrella package that installs this extension alongside its siblings.
-
-## License
-
-MIT — see [LICENSE](https://github.com/juicesharp/rpiv-mono/blob/main/packages/rpiv-todo/LICENSE).
+[Source and tests](https://github.com/xz-dev/pi-audit-todo/tree/source) retain the upstream monorepo layout. The default branch is the installable projection of `packages/rpiv-todo`; `.downstream-source` identifies the exact upstream and patches. See [MAINTAIN.md](MAINTAIN.md) for rebuild instructions. The board is based on [juicesharp/rpiv-mono](https://github.com/juicesharp/rpiv-mono). [MIT](LICENSE), with upstream and downstream notices retained.
