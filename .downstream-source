@@ -1,0 +1,9 @@
+upstream_repository=https://github.com/juicesharp/rpiv-mono
+upstream_commit=1a4add9dbe61597059a93dd9200bf25d51238659
+patch_rpiv_todo_focus_window=not-applied
+patch_rpiv_todo_completed_fade=not-applied
+patch_rpiv_todo_active_strip=not-applied
+patch_pi_audit_todo=not-applied
+source_commit=1a4add9dbe61597059a93dd9200bf25d51238659
+projection_commit=60933ad5fe63cda95fe832b709768cba63cc4615
+source_path=packages/rpiv-todo

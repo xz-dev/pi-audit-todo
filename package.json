@@ -1,0 +1,78 @@
+{
+	"name": "pi-audit-todo",
+	"version": "0.1.0",
+	"description": "A persistent TODO board for Pi with private background reviews and verified writeback.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"todo",
+		"audit",
+		"coding-agent"
+	],
+	"type": "module",
+	"license": "MIT",
+	"author": "Xiangzhe",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/xz-dev/pi-audit-todo.git"
+	},
+	"homepage": "https://github.com/xz-dev/pi-audit-todo#readme",
+	"bugs": {
+		"url": "https://github.com/xz-dev/pi-audit-todo/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": [
+		"config.ts",
+		"index.ts",
+		"locales/",
+		"todo.ts",
+		"todo-overlay.ts",
+		"LICENSE",
+		"docs/",
+		"!docs/*.png",
+		"!docs/*.jpg",
+		"!docs/*.svg",
+		"README.md",
+		"state/invariants.ts",
+		"state/i18n-bridge.ts",
+		"state/replay.ts",
+		"state/selectors.ts",
+		"state/state-reducer.ts",
+		"state/state.ts",
+		"state/store.ts",
+		"state/task-graph.ts",
+		"tool/normalize-params.ts",
+		"tool/response-envelope.ts",
+		"tool/sanitize.ts",
+		"tool/types.ts",
+		"view/format.ts",
+		"MAINTAIN.md",
+		".downstream-source"
+	],
+	"pi": {
+		"image": "https://raw.githubusercontent.com/juicesharp/rpiv-mono/main/packages/rpiv-todo/docs/cover.png",
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@juicesharp/rpiv-i18n": "*",
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"peerDependenciesMeta": {
+		"@juicesharp/rpiv-i18n": {
+			"optional": true
+		}
+	},
+	"dependencies": {
+		"@juicesharp/rpiv-config": "^2.15.0"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}
