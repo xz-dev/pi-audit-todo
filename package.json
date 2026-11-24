@@ -73,6 +73,12 @@
 			"optional": true
 		}
 	},
+	"trustedDependencies": [
+		"pi-extension-utils"
+	],
+	"allowScripts": {
+		"github:xz-dev/pi-extension-utils#113337fbad6d816522fd032f416dc7d011d55170": true
+	},
 	"dependencies": {
 		"@juicesharp/rpiv-config": "^2.15.0",
 		"pi-extension-utils": "github:xz-dev/pi-extension-utils#113337fbad6d816522fd032f416dc7d011d55170",
