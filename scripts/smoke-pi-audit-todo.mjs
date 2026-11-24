@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { createServer, request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib";
 
 const local = (path) => fileURLToPath(new URL(path, import.meta.url));
 const fixtures = pathToFileURL(`${process.env.TEST_REFLECT_DIR || local("../../pi-reflect-watchdog")}/scripts/e2e/`);
@@ -10,10 +12,51 @@ const { modelConfig, startFakeProvider, reflectionResponse, isPrivateReflectionR
 	new URL("fake-provider.mjs", fixtures)
 );
 const root = await mkdtemp("/var/tmp/pi-audit-native-");
-const mainPath = process.env.TEST_EXTENSION || local("../packages/rpiv-todo/index.ts");
+const mainPath = process.env.TEST_PACKAGE
+	? undefined
+	: process.env.TEST_EXTENSION || local("../packages/rpiv-todo/index.ts");
 const pi = process.env.TEST_PI || local("../node_modules/.bin/pi");
 const watchPath = process.env.TEST_CONTINUE_ENTRY || local("../../pi-continue-watchdog/src/extension.ts");
 const variant = process.env.AUDIT_CASE || "positive";
+
+// Some Pi builds compress provider requests. Reflect's fixture consumes plain JSON.
+async function decodeRequests(destination) {
+	const codecs = { gzip: gunzipSync, br: brotliDecompressSync, deflate: inflateSync, zstd: zstdDecompressSync };
+	const proxy = createServer(async (request, response) => {
+		try {
+			const chunks = [];
+			for await (const chunk of request) chunks.push(chunk);
+			const encoding = request.headers["content-encoding"];
+			const buffer = Buffer.concat(chunks);
+			const body = encoding && encoding !== "identity" ? codecs[encoding](buffer) : buffer;
+			const target = new URL(request.url, destination);
+			const outgoing = httpRequest(
+				target,
+				{ method: request.method, headers: { "content-type": "application/json", "content-length": body.length } },
+				(upstream) => {
+					response.writeHead(upstream.statusCode, upstream.headers);
+					upstream.pipe(response);
+				},
+			);
+			response.once("close", () => outgoing.destroy());
+			outgoing.once("error", () => {
+				if (!response.headersSent) response.writeHead(502);
+				response.end();
+			});
+			outgoing.end(body);
+		} catch {
+			response.writeHead(400).end("Invalid compressed fixture request");
+		}
+	});
+	await new Promise((done) => proxy.listen(0, "127.0.0.1", done));
+	return {
+		baseUrl: `http://127.0.0.1:${proxy.address().port}/v1`,
+		close: () => {
+			proxy.closeAllConnections();
+			return new Promise((done) => proxy.close(done));
+		},
+	};
+}
 function tool(callId, value) {
 	return {
 		chunks: [
@@ -99,8 +142,11 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 				}
 			},
 		});
+		const decoder = await decodeRequests(provider.baseUrl);
 		try {
-			await writeJson(join(isolated.agentDir, "models.json"), modelConfig(provider.baseUrl));
+			await writeJson(join(isolated.agentDir, "models.json"), modelConfig(decoder.baseUrl));
+			if (process.env.TEST_PACKAGE)
+				await writeJson(join(isolated.agentDir, "settings.json"), { packages: [process.env.TEST_PACKAGE] });
 			const launch = (args = []) =>
 				new RpcPi({
 					cwd: isolated.workspace,
@@ -113,7 +159,7 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 						"watchdog-fixture",
 						"--model",
 						"watchdog-fixture",
-						...entries.flatMap((path) => ["-e", path]),
+						...entries.flatMap((path) => (path ? ["-e", path] : [])),
 						...args,
 					],
 				});
@@ -214,7 +260,7 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 					events: rpc.events.slice(-8),
 					requests: provider.requests.map((r) => ({
 						private: isPrivateReflectionRequest(r),
-						text: requestText(r).slice(-2300),
+						keys: Object.keys(r.body),
 					})),
 				}).slice(-12000),
 			);
@@ -248,6 +294,7 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 			);
 		} finally {
 			await rpc?.close();
+			await decoder.close();
 			await provider.close();
 		}
 	} catch (error) {

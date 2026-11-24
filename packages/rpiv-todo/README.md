@@ -4,7 +4,7 @@ A persistent TODO board for [Pi](https://github.com/earendil-works/pi), with pri
 
 ## Install
 
-Tested on stock Pi **1.5.2**. Install the package and restart Pi:
+Tested with Pi **1.5.2** and **1.6.0**, including the `1.6.0-xz.437.1` build. Install the package and restart Pi:
 
 ```sh
 pi install git:github.com/xz-dev/pi-audit-todo
@@ -30,7 +30,7 @@ The reviewer reads the parent’s effective session context in a private fork. I
 - `/cancel-todo-audit`: Cancel only this session’s queued and running reviews. It does not stop the main agent or another watchdog.
 - To disable automatic maintenance but keep the board, set `{"audit":{"enabled":false}}` in `${XDG_CONFIG_HOME:-$HOME/.config}/rpiv-todo/config.json` and reload Pi. `PI_AUDIT_TODO_DISABLE=1` also disables it.
 
-Deletion or reactivation by audit requires a narrow, explicit user instruction for the exact ID, e.g. `Delete TODO #7` or `Mark #7 in_progress`. The normal `todo` tool remains available for direct, user-directed bookkeeping. A model judgment is not independent verification of completion. Keep sensitive files outside the permitted scope; a remote model can process the fork’s inherited context.
+Deletion or reactivation by audit requires a narrow, explicit user instruction issued for the existing task, e.g. `Delete TODO #7` or `Mark #7 in_progress`. Completion requires a matching user directive or an explicit whole-item report such as `Task #7 completed`. The normal `todo` tool remains available for direct, user-directed bookkeeping. A model judgment is not independent verification of completion. Keep sensitive files outside the permitted scope; a remote model can process the fork’s inherited context.
 
 ## Source and license
 
