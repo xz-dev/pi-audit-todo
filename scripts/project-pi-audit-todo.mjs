@@ -53,13 +53,23 @@ const release = {
 delete release.scripts;
 writeFileSync(join(output, "package.json"), `${JSON.stringify(release, null, "\t")}\n`);
 const normalized = (ref) => git("rev-parse", "--verify", ref);
+function integrated(ref) {
+	const hash = normalized(ref);
+	try {
+		git("merge-base", "--is-ancestor", hash, "HEAD");
+		return hash;
+	} catch (error) {
+		if (error.status !== 1) throw error;
+		return "not-applied";
+	}
+}
 writeFileSync(
 	join(output, ".downstream-source"),
 	[
 		"upstream_repository=https://github.com/juicesharp/rpiv-mono",
 		`upstream_commit=${git("merge-base", "HEAD", "upstream/main")}`,
 		...["rpiv-todo-focus-window", "rpiv-todo-completed-fade", "rpiv-todo-active-strip", "pi-audit-todo"].map(
-			(p) => `patch_${p.replaceAll("-", "_")}=${normalized(`patch/${p}`)}`,
+			(p) => `patch_${p.replaceAll("-", "_")}=${integrated(`patch/${p}`)}`,
 		),
 		`source_commit=${normalized("HEAD")}`,
 		`projection_commit=${execFileSync("git", ["-C", dirname(fileURLToPath(import.meta.url)), "rev-parse", "HEAD"], { encoding: "utf8" }).trim()}`,
