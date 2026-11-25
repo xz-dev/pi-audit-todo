@@ -20,7 +20,7 @@ const keep = (id: number) => ({
 	sources: [],
 });
 
-function harness() {
+function harness(enabled = true) {
 	const branch: SessionEntry[] = [];
 	const sid = "audit-test";
 	let id = 0;
@@ -56,7 +56,7 @@ function harness() {
 	Object.assign(ctx.sessionManager, { getEntry: (key: string) => branch.find((entry) => entry.id === key) });
 	const refresh = vi.fn(async () => {});
 	installTodoAudit(pi, refresh, {
-		enabled: true,
+		enabled,
 		now: () => workMs,
 		activity: { ...activity, open: async () => {}, close: async () => {} },
 		createRuntime,
@@ -78,6 +78,7 @@ function harness() {
 		branch,
 		pi,
 		ctx,
+		commands: captured.commands,
 		run,
 		refresh,
 		emit,
@@ -249,9 +250,57 @@ it("does not publish after cancellation, and emits no success for a malformed or
 		await Promise.resolve();
 		expect(h.pi.sendMessage).not.toHaveBeenCalled();
 		expect(h.state().tasks).toEqual([row(1, "in_progress"), row(2, "in_progress")]);
-		await h.command("jev-audit", "full");
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("retired"), "info");
 	} finally {
 		await h.close();
+	}
+});
+
+it("registers the renamed manual check even when maintenance is disabled", async () => {
+	const h = harness(false);
+	try {
+		await h.start();
+		expect(h.commands.has("todo-audit")).toBe(true);
+		expect(h.commands.has("jev-audit")).toBe(false);
+		await h.command("todo-audit");
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith("TODO maintenance is disabled.", "info");
+		expect(h.run).not.toHaveBeenCalled();
+	} finally {
+		await h.close();
+	}
+});
+
+it("manually reviews only due items once and never starts a review for an argument", async () => {
+	const h = harness();
+	let finish!: (answer: unknown) => void;
+	h.respond(() => new Promise((resolve) => (finish = resolve)));
+	try {
+		await h.start();
+		await h.startWork();
+		h.board([row(1)]);
+		await h.command("todo-audit");
+		expect(h.run).not.toHaveBeenCalled();
+
+		h.advance(WORK_LIMIT_MS + 1);
+		await h.emit("session_compact"); // Persist work elapsed before adding the fresh item.
+		h.board([row(1), row(2)]);
+		await h.command("todo-audit", "full");
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("retired"), "info");
+		await h.command("todo-audit", "unexpected");
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith("Usage: /todo-audit", "info");
+		expect(h.run).not.toHaveBeenCalled();
+
+		await h.command("todo-audit");
+		await vi.waitFor(() => expect(h.run).toHaveBeenCalledOnce());
+		await h.command("todo-audit");
+		expect(h.run).toHaveBeenCalledOnce();
+
+		finish({ items: [keep(1)] });
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledOnce());
+		expect(h.branch.find((entry) => entry.type === "custom" && entry.customType === REVIEW_ENTRY)).toMatchObject({
+			data: [expect.objectContaining({ id: 1 })],
+		});
+	} finally {
+		await h.close();
+		finish?.({ items: [keep(1)] });
 	}
 });

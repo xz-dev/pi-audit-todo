@@ -166,8 +166,9 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 			rpc = launch();
 			const commands = await rpc.request({ type: "get_commands" }, 30_000);
 			const names = commands.data.commands.map((c) => c.name);
-			assert.equal(names.filter((n) => n === "todos").length, 1, names.join(" "));
-			assert.equal(names.filter((n) => n === "jev-audit").length, 1);
+			for (const name of ["todos", "todo-audit", "cancel-todo-audit"])
+				assert.equal(names.filter((n) => n === name).length, 1, names.join(" "));
+			assert(!names.includes("jev-audit"));
 			assert(!names.includes("jev-audit-service"));
 			assert.equal(names.includes("lock-continue-watchdog"), index !== 0, names.join(" "));
 			assert.equal(

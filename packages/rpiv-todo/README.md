@@ -26,7 +26,7 @@ The reviewer reads the parent’s effective session context in a private fork. I
 ## Controls
 
 - `/todos`: Show the current board. The live panel retains the three latest completions and keeps active tasks above the focus window.
-- `/jev-audit`: Legacy command name; checks existing maintenance eligibility, not the old classifier. The `full` argument is retired.
+- `/todo-audit`: Check for due TODO reviews. The `full` argument only reports that full reassessment is retired. This command replaces `/jev-audit`, which is no longer registered.
 - `/cancel-todo-audit`: Cancel only this session’s queued and running reviews. It does not stop the main agent or another watchdog.
 - To disable automatic maintenance but keep the board, set `{"audit":{"enabled":false}}` in `${XDG_CONFIG_HOME:-$HOME/.config}/rpiv-todo/config.json` and reload Pi. `PI_AUDIT_TODO_DISABLE=1` also disables it.
 

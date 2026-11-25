@@ -497,15 +497,15 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 			from.ui.notify("Cancelled this session’s background TODO reviews.", "info");
 		},
 	});
-	pi.registerCommand("jev-audit", {
-		description: "Check for due TODO maintenance (legacy command name)",
+	pi.registerCommand("todo-audit", {
+		description: "Check for due TODO maintenance",
 		handler: async (args, from) => {
 			if (args.trim() === "full") {
 				from.ui.notify("JEV full reassessment has been retired.", "info");
 				return;
 			}
 			if (args.trim()) {
-				from.ui.notify("Usage: /jev-audit", "info");
+				from.ui.notify("Usage: /todo-audit", "info");
 				return;
 			}
 			if (disabled()) {
