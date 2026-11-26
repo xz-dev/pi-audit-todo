@@ -12,6 +12,8 @@
   "overlay.later": "… {count} ниже",
   "overlay.moreActive": "… {count} ещё активных",
   "overlay.expandHint": "{key} — развернуть",
+  "overlay.clickToExpand": "Нажмите мышью, чтобы развернуть",
+  "overlay.clickOrKeyToExpand": "Нажмите мышью или нажмите {key}, чтобы развернуть",
   "overlay.collapsed": "свёрнуто",
 
   "command.no_todos": "Задач пока нет. Попросите агента добавить!",

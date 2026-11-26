@@ -12,6 +12,8 @@
   "overlay.later": "… {count} plus tard",
   "overlay.moreActive": "… {count} actives en plus",
   "overlay.expandHint": "{key} pour développer",
+  "overlay.clickToExpand": "Cliquer pour développer",
+  "overlay.clickOrKeyToExpand": "Cliquer ou appuyer sur {key} pour développer",
   "overlay.collapsed": "réduit",
 
   "command.no_todos": "Pas encore de tâches. Demandez à l'agent d'en ajouter !",

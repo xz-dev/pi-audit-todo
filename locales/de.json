@@ -12,6 +12,8 @@
   "overlay.later": "… {count} später",
   "overlay.moreActive": "… {count} weitere aktiv",
   "overlay.expandHint": "{key} zum Ausklappen",
+  "overlay.clickToExpand": "Zum Ausklappen klicken",
+  "overlay.clickOrKeyToExpand": "Zum Ausklappen klicken oder {key} drücken",
   "overlay.collapsed": "eingeklappt",
 
   "command.no_todos": "Noch keine Todos. Bitte den Agenten, welche hinzuzufügen!",
