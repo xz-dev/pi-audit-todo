@@ -99,20 +99,20 @@ by id.
 
 ## Collapsing
 
-Press `ctrl+shift+t` to collapse the panel to two lines — the heading plus a dim
-`└─ ctrl+shift+t to expand` hint — and again to expand it. The hint always shows
-the currently configured key.
+Press `ctrl+shift+t` to collapse the panel to the heading plus an expand hint,
+and again to expand it. In Pi fullscreen mode, a plain left click on the
+heading also toggles the panel. While collapsed, a click on the hint row
+expands it too. The fullscreen hint shows both the mouse action and any
+configured shortcut, for example `└─ Click to expand or press ctrl+shift+t`.
 
 Rebind or disable the shortcut with the `collapseKey` option; see
-[configuration.md](./configuration.md#collapsekey). If the shortcut is set to
-`"off"` while the panel is collapsed, the hint becomes a static `collapsed`
-label rather than advertising an unbindable key.
+[configuration.md](./configuration.md#collapsekey). With `collapseKey: "off"`,
+fullscreen still offers `Click to expand`. In regular terminal mode or on a
+host without mouse dispatch, the same row shows only the keyboard shortcut or,
+if disabled, a static `collapsed` label.
 
-Clicking the heading row also toggles the panel, which covers terminals that
-swallow the shortcut. Only an unmodified left click on that row counts: task
-rows, modified clicks, drags and wheel events keep their existing meaning, and
-the click still works when `collapseKey` is `"off"`. Mouse dispatch requires
-Pi's fullscreen mode; a host without it simply never delivers the click.
+Expanded task rows, blank spacer rows, modified clicks, drags and wheel events
+keep their existing behavior.
 
 ## `/todos`
 

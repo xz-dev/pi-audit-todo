@@ -12,6 +12,8 @@
   "overlay.later": "… 下方还有 {count} 条",
   "overlay.moreActive": "… 还有 {count} 个进行中",
   "overlay.expandHint": "按 {key} 展开",
+  "overlay.clickToExpand": "点击展开",
+  "overlay.clickOrKeyToExpand": "点击或按 {key} 展开",
   "overlay.collapsed": "已折叠",
 
   "command.no_todos": "暂无任务。可以让 agent 添加一些！",

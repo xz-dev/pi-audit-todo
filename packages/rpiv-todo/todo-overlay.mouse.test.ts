@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import { createMockCtx, createMockPi, createMockUI } from "@juicesharp/rpiv-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetState, registerTodoTool, setActiveRenderSession, type TaskAction } from "./todo.ts";
@@ -34,7 +34,7 @@ function headingClick(overrides: Partial<TuiMouseEvent> = {}): TuiMouseEvent {
 		screenX: 13,
 		screenY: 40,
 		width: 120,
-		height: 1,
+		height: 3,
 		shift: false,
 		alt: false,
 		ctrl: false,
@@ -65,8 +65,9 @@ async function setup(actions: Array<{ action: TaskAction; [k: string]: unknown }
 		invalidate: () => void;
 		handleMouse?: (event: TuiMouseEvent) => { handled?: boolean } | undefined;
 	};
-	const widget = factory({ requestRender: vi.fn() }, identityTheme);
-	return { widget, tool, ui, overlay };
+	const tui: { mode?: TUI["mode"]; requestRender: () => void } = { requestRender: vi.fn() };
+	const widget = factory(tui, identityTheme);
+	return { widget, tui, overlay };
 }
 
 const twoTasks = [
@@ -105,6 +106,31 @@ describe("TodoOverlay — header click toggles the panel", () => {
 		expect(isCollapsed(widget)).toBe(false);
 	});
 
+	it("expands once from the hint row and leaves the revealed task row alone", async () => {
+		const { widget, overlay } = await setup(twoTasks);
+		overlay.toggleCollapse();
+		const hint = headingClick({ x: 119, y: 1 });
+		expect(widget.handleMouse?.(hint)).toEqual({ handled: true });
+		expect(isCollapsed(widget)).toBe(false);
+		expect(widget.handleMouse?.(hint)).toBeUndefined();
+		expect(isCollapsed(widget)).toBe(false);
+	});
+
+	it("leaves the collapsed spacer and other input on the hint unhandled", async () => {
+		const { widget, overlay } = await setup(twoTasks);
+		overlay.toggleCollapse();
+		for (const event of [
+			headingClick({ y: 2 }),
+			headingClick({ y: 1, shift: true }),
+			headingClick({ y: 1, button: "right" }),
+			headingClick({ y: 1, type: "drag" }),
+			headingClick({ y: 1, type: "wheel" }),
+		]) {
+			expect(widget.handleMouse?.(event)).toBeUndefined();
+			expect(isCollapsed(widget)).toBe(true);
+		}
+	});
+
 	it("ignores clicks on task rows", async () => {
 		const { widget } = await setup(twoTasks);
 		const result = widget.handleMouse?.(headingClick({ y: 1 }));
@@ -139,13 +165,28 @@ describe("TodoOverlay — header click toggles the panel", () => {
 		}
 	});
 
-	it("toggles even when the keyboard shortcut is off", async () => {
+	it("can expand from the hint even when the keyboard shortcut is off", async () => {
 		writeConfigFile(JSON.stringify({ collapseKey: "off" }));
-		const { widget } = await setup(twoTasks);
+		const { widget, tui } = await setup(twoTasks);
+		tui.mode = "fullscreen";
 		widget.handleMouse?.(headingClick());
-		expect(isCollapsed(widget)).toBe(true);
-		widget.handleMouse?.(headingClick());
+		expect(widget.render(200)[1]).toBe("└─ Click to expand");
+		tui.mode = "regular";
+		expect(widget.render(200)[1]).toBe("└─ collapsed");
+		tui.mode = "fullscreen";
+		widget.handleMouse?.(headingClick({ y: 1 }));
 		expect(isCollapsed(widget)).toBe(false);
+	});
+
+	it("advertises the configured shortcut and only offers a click in fullscreen", async () => {
+		writeConfigFile(JSON.stringify({ collapseKey: "alt+o" }));
+		const { widget, overlay, tui } = await setup(twoTasks);
+		overlay.toggleCollapse();
+		expect(widget.render(200)[1]).toBe("└─ alt+o to expand");
+		tui.mode = "fullscreen";
+		expect(widget.render(200)[1]).toBe("└─ Click to expand or press alt+o");
+		tui.mode = "regular";
+		expect(widget.render(200)[1]).toBe("└─ alt+o to expand");
 	});
 
 	it("toggles a collapsed panel back open from the same heading row", async () => {

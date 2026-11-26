@@ -34,6 +34,7 @@ const WIDGET_KEY = "rpiv-todos";
 
 /** Local row index of the heading inside the rendered widget. */
 const HEADING_ROW = 0;
+const EXPAND_HINT_ROW = 1;
 
 // English fallbacks for localized overlay chrome strings.
 const OVERLAY_HEADING = "Todos";
@@ -42,6 +43,8 @@ const OVERLAY_EARLIER = "… {count} earlier";
 const OVERLAY_LATER = "… {count} later";
 const OVERLAY_MORE_ACTIVE = "… {count} more active";
 const OVERLAY_EXPAND_HINT = "{key} to expand";
+const OVERLAY_CLICK_TO_EXPAND = "Click to expand";
+const OVERLAY_CLICK_OR_KEY = "Click to expand or press {key}";
 const OVERLAY_COLLAPSED = "collapsed";
 
 /** Localized overflow marker with the {count} placeholder spliced (same pattern as overlay.expandHint's {key}). */
@@ -94,7 +97,7 @@ export class TodoOverlay {
 							// No rendered strings are cached. Pi invalidates on theme changes;
 							// the next render reads uiCtx.theme.
 						},
-						handleMouse: (event: TuiMouseEvent) => this.handleHeadingClick(event),
+						handleMouse: (event: TuiMouseEvent) => this.handleToggleClick(event),
 					};
 				},
 				{ placement: "aboveEditor" },
@@ -105,18 +108,11 @@ export class TodoOverlay {
 		}
 	}
 
-	/** Toggle the panel from a click on the heading row.
-	 *
-	 * Only an unmodified left click counts: task rows keep their own meaning (and
-	 * there is no per-task action yet), while modified clicks, drags, wheels and
-	 * press/release events stay available to the transcript's selection, scrolling
-	 * and app-level bindings. The heading renders in both states, so the same row
-	 * collapses and expands. Hosts without mouse dispatch never call this and keep
-	 * the keyboard-only behavior. */
-	private handleHeadingClick(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+	/** Keep task rows non-interactive; row 1 only toggles while it shows the collapsed hint. */
+	private handleToggleClick(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.type !== "click" || event.button !== "left") return undefined;
 		if (event.shift || event.alt || event.ctrl) return undefined;
-		if (event.y !== HEADING_ROW) return undefined;
+		if (event.y !== HEADING_ROW && !(this.collapsed && event.y === EXPAND_HINT_ROW)) return undefined;
 		this.toggleCollapse();
 		return { handled: true };
 	}
@@ -152,19 +148,19 @@ export class TodoOverlay {
 		const headingText = `${t("overlay.heading", OVERLAY_HEADING)} (${counts.completed}/${counts.total})`;
 		const heading = truncate(`${theme.fg(headingColor, headingIcon)} ${theme.fg(headingColor, headingText)}`);
 
-		// Collapsed view: just the heading + a dim "└─" expand hint, then the
-		// trailing spacer. Short-circuit before the budget math. The hint splices
-		// the resolved key into the {key} placeholder (per-render, like the row
-		// budget); a config edit needs /reload to re-bind the actual shortcut. The
-		// "off" sentinel is reachable here mid-session (config edited after the
-		// shortcut was bound and the overlay collapsed) — render a static collapsed
-		// label instead of splicing the sentinel into the placeholder.
+		// The hint reflects the current TUI mode and configured key at render time.
 		if (this.collapsed) {
 			const key = resolveCollapseKey();
+			const canClick = this.tui?.mode === "fullscreen";
 			const hint =
 				key === COLLAPSE_KEY_OFF
-					? t("overlay.collapsed", OVERLAY_COLLAPSED)
-					: t("overlay.expandHint", OVERLAY_EXPAND_HINT).replace("{key}", key);
+					? canClick
+						? t("overlay.clickToExpand", OVERLAY_CLICK_TO_EXPAND)
+						: t("overlay.collapsed", OVERLAY_COLLAPSED)
+					: (canClick
+							? t("overlay.clickOrKeyToExpand", OVERLAY_CLICK_OR_KEY)
+							: t("overlay.expandHint", OVERLAY_EXPAND_HINT)
+						).replace("{key}", key);
 			return this.withTrailingSpacer([heading, truncate(`${theme.fg("dim", "└─")} ${theme.fg("dim", hint)}`)]);
 		}
 

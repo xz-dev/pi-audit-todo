@@ -12,6 +12,8 @@
   "overlay.later": "… {count} posteriores",
   "overlay.moreActive": "… {count} mais ativas",
   "overlay.expandHint": "{key} para expandir",
+  "overlay.clickToExpand": "Clique para expandir",
+  "overlay.clickOrKeyToExpand": "Clique ou pressione {key} para expandir",
   "overlay.collapsed": "recolhido",
 
   "command.no_todos": "Nenhuma tarefa ainda. Peça ao agente para adicionar algumas!",

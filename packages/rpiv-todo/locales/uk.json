@@ -12,6 +12,8 @@
   "overlay.later": "… {count} нижче",
   "overlay.moreActive": "… {count} ще активних",
   "overlay.expandHint": "{key} — розгорнути",
+  "overlay.clickToExpand": "Клацніть, щоб розгорнути",
+  "overlay.clickOrKeyToExpand": "Клацніть або натисніть {key}, щоб розгорнути",
   "overlay.collapsed": "згорнуто",
 
   "command.no_todos": "Завдань поки немає. Попросіть агента додати!",

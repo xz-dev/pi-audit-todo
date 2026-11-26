@@ -10,6 +10,8 @@
   "overlay.later": "… {count} later",
   "overlay.moreActive": "… {count} more active",
   "overlay.expandHint": "{key} to expand",
+  "overlay.clickToExpand": "Click to expand",
+  "overlay.clickOrKeyToExpand": "Click to expand or press {key}",
   "overlay.collapsed": "collapsed",
 
   "command.no_todos": "No todos yet. Ask the agent to add some!",
