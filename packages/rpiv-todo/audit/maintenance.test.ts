@@ -2,7 +2,7 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { expect, it } from "vitest";
 import type { Task } from "../tool/types.ts";
 import { createActivityDomain, WorkClock } from "./activity.ts";
-import { parseChoices } from "./decision.ts";
+import { evidence, makePrompt, parseChoices } from "./decision.ts";
 import { CLOCK_ENTRY, dueItems, newActivations, REVIEW_ENTRY, replayAudit, WORK_LIMIT_MS } from "./history.ts";
 
 const extra = (id: string, customType: string, data: unknown): SessionEntry => ({
@@ -69,6 +69,63 @@ it("counts union-of-work, pauses when everyone is idle and resumes a restored cl
 	now += 3_600_000;
 	expect(clock.at()).toBe(15_200);
 	off();
+});
+
+it.each(["These TODO items need periodic maintenance.", "New parallel activity. Account for the entire active set."])(
+	"gives the reviewer contrasting active-work cases: %s",
+	(trigger) => {
+		const prompt = makePrompt([item(1, "in_progress")], [1], trigger, new Map());
+		expect(prompt).toContain(trigger);
+		expect(prompt).toContain("observing a still-running job qualifies");
+		expect(prompt).toContain("cite a fresh original record");
+		expect(prompt).toContain("propose status pending and addBlockedBy");
+		expect(prompt).toContain("Waiting is not grounds for an active keep");
+		expect(prompt).toContain("return unverified and name the missing fact");
+		expect(prompt).toContain("identify both portions; never create tasks");
+		expect(prompt).toContain('"kind":"keep|update|delete|unverified"');
+	},
+);
+
+it("uses original, in-window evidence only for active keeps", () => {
+	const assistant = (id: string, text: string): SessionEntry => ({
+		id,
+		parentId: null,
+		timestamp: "",
+		type: "message",
+		message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: 0 } as Extract<
+			SessionEntry,
+			{ type: "message" }
+		>["message"],
+	});
+	const refs = evidence([
+		assistant("old", "Task #1 test job is running."),
+		extra("receipt", "pi-audit-todo", "Task #1 kept"),
+		assistant("fresh", "Task #1 test job is running; now on suite 2."),
+	]);
+	const board = [item(1, "in_progress"), item(2), item(3, "completed")];
+	const decision = (id: number, sources: string[]) => ({ id, kind: "keep", reason: "Record is accurate", sources });
+	const order = new Map([
+		["old", 0],
+		["cutoff-not-a-message", 1],
+		["fresh", 2],
+	]);
+	const isFresh = (_id: number, ref: string) => (order.get(ref) ?? -1) > order.get("cutoff-not-a-message")!;
+	const check = (sources: string[]) =>
+		parseChoices(
+			{ items: [decision(1, sources), decision(2, []), decision(3, [])] },
+			[1, 2, 3],
+			board,
+			refs,
+			() => true,
+			isFresh,
+		)?.map((choice) => choice.kind);
+	for (const sources of [[], ["old"], ["receipt"], ["after-anchor"]]) {
+		expect(check(sources)).toEqual(["unverified", "keep", "keep"]);
+	}
+	expect(check(["fresh"])).toEqual(["keep", "keep", "keep"]);
+	const prompt = makePrompt(board, [1], "Review", refs, new Map([[1, "cutoff-not-a-message"]]), isFresh);
+	expect(prompt).toContain('[[1,{"after":"cutoff-not-a-message","candidates":["fresh"]}]]');
+	expect(prompt).toContain('"old",{"role":"assistant"'); // Older records remain available as context.
 });
 
 it("requires exact item IDs and trusted original sources for operations", () => {

@@ -8,6 +8,7 @@ import type { Task } from "../tool/types.ts";
 import { createActivityDomain, WorkClock } from "./activity.ts";
 import { type Choice, evidence, makePrompt, parseChoices } from "./decision.ts";
 import {
+	activeEvidenceAfter,
 	activeIds,
 	CLOCK_ENTRY,
 	dueItems,
@@ -51,6 +52,11 @@ interface Job {
 
 function sameIds(a: readonly number[], b: readonly number[]): boolean {
 	return a.length === b.length && a.every((id) => b.includes(id));
+}
+
+function isAfter(order: ReadonlyMap<string, number>, ref: string, boundary?: string): boolean {
+	const index = boundary === undefined ? undefined : order.get(boundary);
+	return index !== undefined && (order.get(ref) ?? -1) > index;
 }
 
 function changes(before: Task | undefined, after: Task | undefined): string {
@@ -150,7 +156,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		}
 	}
 
-	function settle(job: Job, decisions: Choice[]) {
+	function settle(job: Job, decisions: Choice[], sourceOrder: ReadonlyMap<string, number>) {
 		const snapshot = history();
 		if (!current(job, snapshot)) return;
 		const coversCohort = job.parallel === undefined || sameIds(job.ids, activeIds(snapshot));
@@ -160,7 +166,8 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 				job.ids.every((id) => snapshot.items.get(id)?.revision === job.history.items.get(id)?.revision));
 		const originalBoard = getState(sid(job.ctx));
 		const lines: string[] = [];
-		const accepted: number[] = [];
+		const accepted = new Set<number>();
+		const activeKeeps = new Set<number>();
 		const applied = new Set<number>();
 		for (const choice of decisions) {
 			const before = snapshot.items.get(choice.id);
@@ -179,8 +186,21 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 				continue;
 			}
 			const reason = sanitizeTerminalText(choice.reason).replace(/\s+/g, " ");
+			if (choice.kind === "unverified") {
+				lines.push(`#${choice.id} unverified: ${reason}`);
+				continue;
+			}
 			if (choice.kind === "keep") {
-				accepted.push(choice.id);
+				if (before.task.status === "in_progress") {
+					// Compare against the live cutoff within this fork's frozen prefix.
+					const cutoff = activeEvidenceAfter(before, sourceOrder);
+					if (!choice.sources.some((ref) => isAfter(sourceOrder, ref, cutoff))) {
+						lines.push(`#${choice.id} unverified: newer review already covers this evidence.`);
+						continue;
+					}
+					activeKeeps.add(choice.id);
+				}
+				accepted.add(choice.id);
 				lines.push(`#${choice.id} kept: ${reason}`);
 				continue;
 			}
@@ -204,7 +224,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 					continue;
 				}
 				applied.add(choice.id);
-				accepted.push(choice.id);
+				accepted.add(choice.id);
 				lines.push(
 					`#${choice.id} ${changes(
 						before.task,
@@ -218,13 +238,15 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		if (applied.size)
 			void refresh().catch(() => warn("TODO audit updated the board, but its panel could not be refreshed."));
 		const final = history();
-		const reviews: Reviewed[] = accepted.flatMap((id) => {
+		const reviews: Reviewed[] = [...accepted].flatMap((id) => {
 			const item = final.items.get(id);
-			return item ? [{ id, revision: item.revision, loops: final.loops, workMs: clock.at() }] : [];
+			if (!item) return [];
+			const evidenceCutoff = activeKeeps.has(id) ? job.anchor : (item.activeCutoff ?? item.activeSince);
+			return [{ id, revision: item.revision, loops: final.loops, workMs: clock.at(), evidenceCutoff }];
 		});
 		for (const id of job.ids) {
 			const version = final.items.get(id)?.revision;
-			if (version && !accepted.includes(id))
+			if (version && !accepted.has(id))
 				retry.set(overdueKey(id, version), { loops: final.loops, workMs: clock.at() });
 		}
 		try {
@@ -269,6 +291,13 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		const refs = evidence(segment);
 		const sourceOrder = new Map(segment.map((entry, index) => [entry.id, index]));
 		const board = [...job.history.items.values()].map((item) => item.task);
+		const activeCutoffs = new Map(
+			job.ids.flatMap((id) => {
+				const item = job.history.items.get(id);
+				return item?.task.status === "in_progress" ? [[id, activeEvidenceAfter(item, sourceOrder)] as const] : [];
+			}),
+		);
+		const freshActiveSource = (id: number, ref: string) => isAfter(sourceOrder, ref, activeCutoffs.get(id));
 		const result = await (options.run ?? runPrivateInquiry<Choice[]>)({
 			runtime: ready,
 			fork: {
@@ -283,11 +312,14 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 			signal: job.abort.signal,
 			isCurrent: () => current(job),
 			validate: (value) => {
-				const choices = parseChoices(value, job.ids, board, refs, (id, ref) => {
-					const created = job.history.items.get(id)?.created;
-					const origin = created ? sourceOrder.get(created) : undefined;
-					return origin !== undefined && (sourceOrder.get(ref) ?? -1) > origin;
-				});
+				const choices = parseChoices(
+					value,
+					job.ids,
+					board,
+					refs,
+					(id, ref) => isAfter(sourceOrder, ref, job.history.items.get(id)?.created),
+					freshActiveSource,
+				);
 				return choices
 					? { valid: true, value: choices }
 					: {
@@ -303,10 +335,12 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 						? "These TODO items need periodic maintenance."
 						: `Activity #${job.parallel} became active with ${job.ids.length} concurrent entries. Account for the entire active set.`,
 					refs,
+					activeCutoffs,
+					freshActiveSource,
 				),
 			correction: (error) => `No result was accepted: ${error}. Return a complete corrected result.`,
 		});
-		if (result.kind === "decision") settle(job, result.decision);
+		if (result.kind === "decision") settle(job, result.decision, sourceOrder);
 		else if (result.kind !== "cancelled" && current(job))
 			throw new Error("Private TODO review did not produce an accepted decision.");
 	}

@@ -23,6 +23,13 @@ describe("registerTodoTool — guidance overrides", () => {
 		const tool = captured.tools.get(TOOL_NAME)!;
 		expect(tool.promptSnippet).toBe(DEFAULT_PROMPT_SNIPPET);
 		expect((tool.promptGuidelines as string[]).length).toBe(DEFAULT_GUIDELINES_LENGTH);
+		expect(tool.promptGuidelines).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining("in_progress only while work on that task is actually underway"),
+				expect.stringContaining("set it pending, add an existing prerequisite with blockedBy"),
+				expect.stringContaining("narrow or keep the moving part in_progress and leave the deferred part pending"),
+			]),
+		);
 	});
 
 	it("uses built-in defaults when config has no guidance field", () => {

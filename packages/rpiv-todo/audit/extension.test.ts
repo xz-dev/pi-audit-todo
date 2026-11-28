@@ -8,17 +8,19 @@ import type { Task } from "../tool/types.ts";
 import { createActivityDomain } from "./activity.ts";
 import type { Choice } from "./decision.ts";
 import { installTodoAudit } from "./extension.ts";
-import { REVIEW_ENTRY, WORK_LIMIT_MS } from "./history.ts";
+import { REVIEW_ENTRY, replayAudit, WORK_LIMIT_MS } from "./history.ts";
 
 const model = fauxProvider({ provider: "faux", models: [{ id: "script" }] }).getModel();
 const historyStamp = "2026-01-01T00:00:00.000Z";
 const row = (id: number, status: Task["status"] = "pending"): Task => ({ id, subject: `item ${id}`, status });
-const keep = (id: number) => ({
+const keep = (id: number, sources: string[] = []) => ({
 	id,
 	kind: "keep",
 	reason: `Item ${id} still represents acknowledged work`,
-	sources: [],
+	sources,
 });
+
+const unverified = (id: number, reason: string) => ({ id, kind: "unverified", reason, sources: [] });
 
 function harness(enabled = true) {
 	const branch: SessionEntry[] = [];
@@ -58,7 +60,7 @@ function harness(enabled = true) {
 	installTodoAudit(pi, refresh, {
 		enabled,
 		now: () => workMs,
-		activity: { ...activity, open: async () => {}, close: async () => {} },
+		activity: Object.assign(activity, { open: async () => {}, close: async () => {} }),
 		createRuntime,
 		run,
 	});
@@ -85,6 +87,8 @@ function harness(enabled = true) {
 		respond: (fn: typeof answer) => {
 			answer = fn;
 		},
+		lastReport: () =>
+			[...branch].reverse().find((entry) => entry.type === "message" && entry.message.role === "assistant")!.id,
 		async start() {
 			await emit("session_start");
 			user("Please keep the board accurate.");
@@ -105,19 +109,20 @@ function harness(enabled = true) {
 			replaceState(sid, { tasks, nextId });
 			pi.appendEntry("rpiv-todo-state", { action: "update", tasks, nextId, params: {} });
 		},
-		async loop() {
+		async loop(text = "Work report") {
 			const entry = {
 				...nextEntry(),
 				type: "message",
 				message: {
 					role: "assistant",
-					content: [{ type: "text", text: "Work report" }],
+					content: [{ type: "text", text }],
 					stopReason: "stop",
 					timestamp: 0,
 				},
 			} as SessionMessageEntry;
 			branch.push(entry);
 			await emit("turn_end", { messageEntryId: entry.id, outcome: "completed" });
+			return entry.id;
 		},
 		async command(name: string, args = "") {
 			const handler = captured.commands.get(name)?.handler;
@@ -140,24 +145,25 @@ it("writes a private result through the board once, keeps siblings with reasons,
 		await h.startWork();
 		const a = row(1, "in_progress");
 		h.board([a, row(2)]);
-		await h.loop();
+		const progress = await h.loop("Task #1 is actively debugging the failing fixture tests.");
 		expect(h.run).not.toHaveBeenCalled();
 		h.respond(() => ({
 			items: [
-				keep(1),
+				keep(1, [progress]),
 				{
 					id: 2,
 					kind: "update",
 					reason: "This item waits for the existing prerequisite.",
-					sources: ["e1"],
+					sources: [h.lastReport()],
 					patch: { status: "pending", description: "Waiting for #1", addBlockedBy: [1] },
 				},
 			],
 		}));
 		h.board([a, row(2, "in_progress")]);
-		await h.loop();
+		await h.loop("Task #2 work has stopped until task #1 fixes the fixture.");
 		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledOnce());
 		expect(h.state().tasks[1]).toMatchObject({ status: "pending", blockedBy: [1] });
+		expect(replayAudit(h.branch).items.get(2)?.task).toMatchObject({ status: "pending", blockedBy: [1] });
 		expect(h.refresh).toHaveBeenCalledOnce();
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ content: expect.stringContaining("dependencies: #1") }),
@@ -172,6 +178,49 @@ it("writes a private result through the board once, keeps siblings with reasons,
 	}
 });
 
+it.each([keep(1), unverified(1, "The parser is underway, but its integration is deferred; track those separately.")])(
+	"reports $kind without renewing the item or blocking an independent correction",
+	async (choice) => {
+		const h = harness();
+		try {
+			await h.start();
+			h.board([row(1, "in_progress"), row(2), row(3)]);
+			await h.loop();
+			h.board([row(1, "in_progress"), row(2, "in_progress"), row(3)]);
+			h.respond(() => ({
+				items: [
+					choice,
+					{
+						id: 2,
+						kind: "update",
+						reason: "Work stopped until task #3 supplies a fixture.",
+						sources: [h.lastReport()],
+						patch: { status: "pending", addBlockedBy: [3] },
+					},
+				],
+			}));
+			await h.loop("Task #2 is no longer underway and waits for task #3's fixture.");
+			await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledOnce());
+			const receipt = vi.mocked(h.pi.sendMessage).mock.calls[0];
+			expect(receipt).toMatchObject([
+				{
+					content: expect.stringContaining(
+						`#1 unverified: ${choice.kind === "unverified" ? choice.reason : "No fresh original evidence"}`,
+					),
+				},
+				{ triggerTurn: false },
+			]);
+			expect(JSON.stringify(receipt[0])).toContain("dependencies: #3");
+			expect(h.state().tasks).toMatchObject([row(1, "in_progress"), { ...row(2), blockedBy: [3] }, row(3)]);
+			expect(h.branch.find((entry) => entry.type === "custom" && entry.customType === REVIEW_ENTRY)).toMatchObject({
+				data: [expect.objectContaining({ id: 2 })],
+			});
+		} finally {
+			await h.close();
+		}
+	},
+);
+
 it("does not renew a dependent item after its prerequisite changes in the same batch", async () => {
 	const h = harness();
 	try {
@@ -184,14 +233,14 @@ it("does not renew a dependent item after its prerequisite changes in the same b
 					id: 1,
 					kind: "update",
 					reason: "The prerequisite needs clarification.",
-					sources: ["e1"],
+					sources: [h.lastReport()],
 					patch: { status: "pending" },
 				},
-				keep(2),
+				keep(2, [h.lastReport()]),
 			],
 		}));
 		h.board([row(1, "in_progress"), { ...row(2, "in_progress"), blockedBy: [1] }]);
-		await h.loop();
+		await h.loop("Task #1 paused pending clarification. A separate worker is testing task #2.");
 		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledOnce());
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ content: expect.stringContaining("#2 skipped") }),
@@ -224,6 +273,88 @@ it("uses a working-time deadline before the next loop and arms no review when ev
 		expect(h.run).toHaveBeenCalledOnce();
 		expect(h.pi.sendMessage).toHaveBeenCalledOnce();
 		await h.settle();
+	} finally {
+		await h.close();
+	}
+});
+
+it("accepts an overlapping report only once and preserves observations made while the fork runs", async () => {
+	const h = harness();
+	try {
+		await h.start();
+		await h.startWork();
+		const replies: ((result: unknown) => void)[] = [];
+		h.respond(() => new Promise((resolve) => replies.push(resolve)));
+		h.board([row(1, "in_progress"), row(2, "in_progress")]);
+		const first = await h.loop("The #1 unit tests and #2 integration tests are running in separate jobs.");
+		await vi.waitFor(() => expect(replies).toHaveLength(2));
+		const newer = await h.loop(
+			"The #1 unit test job reached suite 2; the #2 integration job has started browser tests.",
+		);
+		const result = (ref: string) => ({ items: [keep(1, [ref]), keep(2, [ref])] });
+		replies[0](result(first));
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledTimes(1));
+		const cutoff = h.run.mock.calls[0][0].fork.anchorId;
+		expect(replayAudit(h.branch).items.get(1)?.activeCutoff).toBe(cutoff);
+		replies[1](result(first));
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledTimes(2));
+		expect(h.pi.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				content: expect.stringContaining("#1 unverified: newer review already covers this evidence"),
+			}),
+			{ deliverAs: "steer", triggerTurn: false },
+		);
+		expect(h.branch.filter((entry) => entry.type === "custom" && entry.customType === REVIEW_ENTRY)).toHaveLength(1);
+		await h.command("todo-audit");
+		expect(h.run).toHaveBeenCalledTimes(2);
+		h.respond(() => result(newer));
+		h.advance(WORK_LIMIT_MS + 1);
+		await h.command("todo-audit");
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledTimes(3));
+		expect(h.pi.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({ content: expect.stringContaining("#1 kept:") }),
+			{ deliverAs: "steer", triggerTurn: false },
+		);
+		expect(h.branch.filter((entry) => entry.type === "custom" && entry.customType === REVIEW_ENTRY)).toHaveLength(2);
+	} finally {
+		await h.close();
+	}
+});
+
+it("replays a single overdue item's checkpoint, ignores a repeated report, and accepts new progress", async () => {
+	const h = harness();
+	try {
+		await h.start();
+		await h.startWork();
+		const task = row(1, "in_progress");
+		h.board([task]);
+		const first = await h.loop("Task #1's test run is still executing, now on its second suite.");
+		h.respond(() => ({ items: [keep(1, [first])] }));
+		h.advance(WORK_LIMIT_MS + 1);
+		await h.command("todo-audit");
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledTimes(1));
+		const before = replayAudit(h.branch).items.get(1);
+		const reviewed = replayAudit(h.branch).reviews.get(1);
+		expect(reviewed?.evidenceCutoff).toBeDefined();
+		await h.emit("session_tree");
+		h.advance(WORK_LIMIT_MS + 1);
+		await h.command("todo-audit");
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledTimes(2));
+		expect(h.pi.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({ content: expect.stringContaining("#1 unverified: No fresh original evidence") }),
+			{ deliverAs: "steer", triggerTurn: false },
+		);
+		expect(replayAudit(h.branch).reviews.get(1)).toEqual(reviewed);
+		await h.command("todo-audit");
+		expect(h.run).toHaveBeenCalledTimes(2);
+		const latest = await h.loop("Task #1's same test run is still executing, now on its final suite.");
+		h.respond(() => ({ items: [keep(1, [latest])] }));
+		h.advance(60_001);
+		await h.command("todo-audit");
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledTimes(3));
+		expect(replayAudit(h.branch).reviews.get(1)?.evidenceCutoff).not.toBe(reviewed?.evidenceCutoff);
+		expect(replayAudit(h.branch).items.get(1)?.revision).toBe(before?.revision);
+		expect(h.state().tasks).toEqual([task]);
 	} finally {
 		await h.close();
 	}

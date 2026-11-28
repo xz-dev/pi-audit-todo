@@ -70,6 +70,65 @@ def accrue (elapsed : Nat) (ordinaryBusy : List Bool) (duration : Nat) : Nat :=
     mayWrite old current evidenceValidated = false := by simp [mayWrite, stale]
  theorem noAuthorityCannotWrite (fence : WriteFence) : mayWrite fence fence false = false := by simp [mayWrite]
 
+-- The accepted checkpoint records both the evidence boundary and scheduling baseline.
+-- Record positions are ordered within one branch; relevance is supplied by the reviewer.
+structure ActiveCheckpoint where
+  evidenceCutoff : Nat
+  baseline : Baseline
+
+inductive ActiveDecision where
+  | keep (source : Nat) (originalItemObservation : Bool)
+  | pause (confirmedWholeItemWait : Bool)
+  | unverified
+
+inductive ActiveOutcome where
+  | kept (checkpoint : ActiveCheckpoint)
+  | movedToPending
+  | unverified
+
+-- The owner's live fence and evidence checks decide which effects are permitted.
+def assessActive (observed current : WriteFence) (previous : ActiveCheckpoint)
+    (anchor : Nat) (now : Baseline) : ActiveDecision → ActiveOutcome
+  | .keep source relevant =>
+    if mayWrite observed current (relevant && decide (previous.evidenceCutoff < source ∧ source ≤ anchor))
+    then .kept ⟨anchor, now⟩ else .unverified
+  | .pause supported => if mayWrite observed current supported then .movedToPending else .unverified
+  | .unverified => .unverified
+
+-- Only a successful active KEEP replaces the checkpoint of the current active period.
+def keepCheckpoint (previous : ActiveCheckpoint) : ActiveOutcome → ActiveCheckpoint
+  | .kept next => next
+  | _ => previous
+
+-- Stale evidence cannot renew, and an eligible observation inside the fork can renew.
+theorem staleDoesNotRenew (old current : WriteFence) (previous : ActiveCheckpoint)
+    (anchor source : Nat) (now : Baseline) (relevant : Bool) (stale : source ≤ previous.evidenceCutoff) :
+    assessActive old current previous anchor now (.keep source relevant) = .unverified := by
+  simp [assessActive, mayWrite, Nat.not_lt_of_ge stale]
+
+theorem freshCanRenew (fence : WriteFence) (previous : ActiveCheckpoint)
+    (anchor source : Nat) (now : Baseline) (later : previous.evidenceCutoff < source) (visible : source ≤ anchor) :
+    assessActive fence fence previous anchor now (.keep source true) = .kept ⟨anchor, now⟩ := by
+  simp [assessActive, mayWrite, later, visible]
+
+-- Across successive reviews, cached evidence and uncertainty preserve the baseline.
+-- A fresh report can renew again; only a confirmed whole-item pause changes its status.
+theorem activeReviewIsCorrect (fence : WriteFence) (previous : ActiveCheckpoint)
+    (firstSource firstAnchor nextSource nextAnchor : Nat) (firstTime nextTime : Baseline)
+    (firstNew : previous.evidenceCutoff < firstSource) (firstVisible : firstSource ≤ firstAnchor)
+    (nextNew : firstAnchor < nextSource) (nextVisible : nextSource ≤ nextAnchor) :
+    let first := keepCheckpoint previous (assessActive fence fence previous firstAnchor firstTime (.keep firstSource true))
+    keepCheckpoint first (assessActive fence fence first nextAnchor nextTime (.keep firstSource true)) = first ∧
+    keepCheckpoint first (assessActive fence fence first nextAnchor nextTime .unverified) = first ∧
+    assessActive fence fence first nextAnchor nextTime (.keep nextSource true) = .kept ⟨nextAnchor, nextTime⟩ ∧
+    assessActive fence fence first nextAnchor nextTime (.pause true) = .movedToPending ∧
+    assessActive fence fence first nextAnchor nextTime (.pause false) = .unverified := by
+  dsimp only
+  rw [freshCanRenew fence previous firstAnchor firstSource firstTime firstNew firstVisible]
+  simp [keepCheckpoint, assessActive, mayWrite, Nat.not_lt_of_ge firstVisible, nextNew, nextVisible]
+
+#print axioms activeReviewIsCorrect
+
 end TodoReview
 
-def main : IO Unit := IO.println "TODO maintenance thresholds, activity union, and write fences checked."
+def main : IO Unit := IO.println "TODO maintenance: fresh evidence renews; stale or unverified reviews do not; confirmed pauses move to pending."

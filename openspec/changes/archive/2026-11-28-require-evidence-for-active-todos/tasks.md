@@ -1,0 +1,21 @@
+## 1. Align the instructions seen by agents
+
+- [x] 1.1 Replace the unconditional blocker rule in `packages/rpiv-todo/todo.ts`. Extend `todo.guidance.test.ts` to check the registered defaults distinguish debugging from waiting, describe `pending` with a tracked dependency or external restart condition, and assign mixed-scope splitting to the main agent. Verify existing override and fallback cases still pass.
+- [x] 1.2 Update the private instructions and response examples in `audit/decision.ts`. Add prompt-contract cases in `audit/maintenance.test.ts` for both periodic and parallel triggers: supported ongoing work, evidenced pause, insufficient evidence, and split needed. Verify the reviewer is offered no task-creation operation and cannot justify an active KEEP with the wait itself.
+
+## 2. Track which evidence is new for each active task
+
+- [x] 2.1 Extend `audit/history.ts` replay to identify the start of an uninterrupted active period and restore a per-item accepted evidence cutoff, independently of the due-time baseline. Add `audit/replay.test.ts` fixtures for a legacy receipt, a new receipt with fork anchor, an intervening metadata edit, reactivation, and clear/ID reuse; verify unrelated work and discarded-branch records cannot supply a cutoff.
+- [x] 2.2 Pass the per-item evidence window into the review prompt and validation from `audit/extension.ts`. Check original-source provenance and order within the anchored prefix. In `audit/maintenance.test.ts` verify a fresh eligible record passes, while empty citations, expired citations, audit messages and out-of-window records cannot substantiate an active keep. Verify a newly observed update on the same long-running job can pass again, and pending/terminal KEEP behavior is unchanged.
+
+## 3. Publish corrections and uncertainty as different outcomes
+
+- [x] 3.1 Add the private item-level `unverified` outcome and handle a well-formed but unsupported active KEEP without rejecting independent siblings. In `audit/extension.test.ts` verify an unverified or split-needed item yields an explanatory receipt, no mutation and no accepted checkpoint for its ID; a guarded sibling correction still commits. Verify malformed result envelopes and unauthorized operations remain rejected.
+- [x] 3.2 Fence acceptance against the live evidence cutoff in `settle`; persist the accepted fork anchor, not the later time of delivery. Use the existing per-item retry backoff for unverified results. Exercise two overlapping reviews citing the same report, and a new original report arriving while the first fork runs: the first report can renew only once, and the second stays eligible for a later review. Verify no immediate retry loop and no additional main turn.
+- [x] 3.3 Exercise the complete review path for one overdue active task and for a newly concurrent group. Use realistic source records in the existing audit harness rather than the empty-source active KEEP fixture. Assert the board and replay show `pending` plus the known dependency for a confirmed wait, unchanged status for an unknown, and successive accepted keeps for genuinely continuing work. Retain existing stale-write, cancellation and terminal-review tests.
+
+## 4. Document and verify the lifecycle contract
+
+- [x] 4.1 Update `packages/rpiv-todo/README.md` with the debugging/waiting/splitting contrasts and show what an unverified receipt means. Check examples use only supported `todo` fields and do not imply a timeout, a maximum KEEP count or a new public status.
+- [x] 4.2 Extend `docs/programming-thinking/todo-review.idea.lean` to distinguish supported renewal, guarded pause correction and unverified review. Model freshness as an explicit assumption about ordered evidence; prove that stale evidence or an unverified result cannot advance an accepted baseline, while successive fresh observations can. Typecheck and run the model with `lean --run docs/programming-thinking/todo-review.idea.lean`.
+- [x] 4.3 Run `npm test -- packages/rpiv-todo`, the repo typecheck `npx --no-install tsc --noEmit -p tsconfig.base.json`, and `openspec validate require-evidence-for-active-todos --strict`. Confirm no public task-status, tool-schema, configuration or command change is required and report any failures separately.
