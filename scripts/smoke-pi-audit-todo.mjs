@@ -79,11 +79,21 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 	await mkdir(base);
 	const isolated = await createIsolatedEnvironment(base);
 	let ordinary = 0;
+	let privateAnswers = 0;
+	const resultPaths = [];
 	let rpc;
 	try {
 		const provider = await startFakeProvider({
 			responsePlan: ({ request }) => {
 				if (isPrivateReflectionRequest(request)) {
+					++privateAnswers;
+					if (variant === "retry") {
+						const path = requestText(request).match(
+							/<private_inquiry_result_file>(.*?)<\/private_inquiry_result_file>/,
+						)?.[1];
+						if (path) resultPaths.push(path);
+						if (privateAnswers <= 3) return { chunks: [{ content: "Audit complete without using write." }] };
+					}
 					const source = requestText(request).match(
 						/\["([a-z0-9]+)",\{"role":"user","text":"First the second item.*?"\}\]/,
 					)?.[1];
@@ -266,7 +276,13 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 				}).slice(-12000),
 			);
 			assert.equal(ordinary, 4);
-			assert.equal(provider.requests.filter(isPrivateReflectionRequest).length, 1);
+			assert.equal(provider.requests.filter(isPrivateReflectionRequest).length, variant === "retry" ? 4 : 1);
+			if (variant === "retry") {
+				assert.equal(resultPaths.length, 4);
+				assert.deepEqual(resultPaths.slice(1, 3), [resultPaths[0], resultPaths[0]]);
+				assert.notEqual(resultPaths[3], resultPaths[0], "whole retry writes to a fresh file");
+				assert.equal(branch.data.filter((e) => e.customType === "pi-audit-todo").length, 1);
+			}
 			assert(!branch.data.some((e) => e.customType?.includes("watchdog") && /continued|outcome/.test(e.customType)));
 			const lastBoard = branch.data.filter((e) => e.customType === "rpiv-todo-state").at(-1).data.tasks;
 			assert.equal(lastBoard.find((t) => t.id === 2).status, "pending");
@@ -289,7 +305,7 @@ for (const [index, entries] of [[mainPath], [mainPath, watchPath], [watchPath, m
 			console.log(
 				JSON.stringify({
 					loadOrder: index,
-					compared: "one actual private request; no audit wake; board and original model context persist",
+					compared: `${privateAnswers} actual private request(s); no audit wake; board and original model context persist`,
 					receipt: receipt.content,
 				}),
 			);

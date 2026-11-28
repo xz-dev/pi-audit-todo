@@ -1,6 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { probePiAgentState } from "pi-extension-utils/pi-agent-state";
-import { captureAnchor, type PrivateRuntime, runPrivateInquiry } from "pi-extension-utils/private-inquiry";
+import {
+	captureAnchor,
+	INVALID_ATTEMPT_LIMIT,
+	type PrivateRuntime,
+	type PrivateSessionEvidence,
+	runPrivateInquiry,
+} from "pi-extension-utils/private-inquiry";
 import { getState, sid } from "../state/store.ts";
 import { commitTodo } from "../todo.ts";
 import { sanitizeTerminalText } from "../tool/sanitize.ts";
@@ -27,6 +34,7 @@ const RECEIPT = "pi-audit-todo";
 const RETRY_WORK_MS = 60_000;
 const MAX_RUNNING = 2;
 const MAINTENANCE_BATCH = 16;
+const WHOLE_ATTEMPT_LIMIT = 3;
 const domain = createActivityDomain();
 const participants = new Set<object>();
 let root: object | undefined;
@@ -75,6 +83,26 @@ function changes(before: Task | undefined, after: Task | undefined): string {
 	return fields.join("; ") || "updated";
 }
 
+function noticeLine(text: string): string {
+	return truncateToWidth(sanitizeTerminalText(text).trim(), Math.max(1, (process.stdout.columns || 80) - 2));
+}
+
+function failureNotice(error: string, session: PrivateSessionEvidence | undefined): string {
+	const detail = sanitizeTerminalText(error).trim();
+	const path = session?.kind === "available" ? session.path : undefined;
+	const evidence =
+		path && sanitizeTerminalText(path) === path
+			? `Private session JSONL retained: ${path}`
+			: session?.kind === "unavailable" && session.reason === "no-session"
+				? "No private session was created."
+				: `Private session evidence unavailable${session?.kind === "unavailable" ? ` (${session.reason})` : ""}.`;
+	return [
+		`TODO audit: private review failed after ${WHOLE_ATTEMPT_LIMIT} attempts; no unverified result was applied.`,
+		...(detail ? [noticeLine(`Last error: ${detail}`)] : []),
+		evidence,
+	].join("\n");
+}
+
 /** The only parent write path is the board owner's synchronous tool commit lane. */
 export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>, options: AuditOptions) {
 	const activity = options.activity ?? domain;
@@ -112,7 +140,28 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		return !!failure && h.loops - failure.loops < 10 && clock.at() - failure.workMs < RETRY_WORK_MS;
 	};
 	const disabled = () => options.enabled === false || process.env.PI_AUDIT_TODO_DISABLE === "1";
-	const warn = (message: string) => ctx?.ui.notify(message, "warning");
+	const warn = (message: string) => {
+		try {
+			ctx?.ui.notify(message, "warning");
+		} catch {
+			// A notification failure cannot change board or retry authority.
+		}
+	};
+
+	function acquireRuntime(): Promise<PrivateRuntime> {
+		if (runtime) return runtime;
+		const create =
+			options.createRuntime ??
+			(() => import("private-inquiry-subagents-runtime/watchdog-runtime").then((m) => m.createWatchdogRuntime()));
+		const acquiring = Promise.resolve()
+			.then(create)
+			.catch((error: unknown) => {
+				if (runtime === acquiring) runtime = undefined;
+				throw error;
+			});
+		runtime = acquiring;
+		return acquiring;
+	}
 
 	function retire() {
 		clearTimeout(deadline);
@@ -277,15 +326,6 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 
 	async function reflect(job: Job) {
 		if (!current(job)) return;
-		const create =
-			options.createRuntime ??
-			(() => import("private-inquiry-subagents-runtime/watchdog-runtime").then((m) => m.createWatchdogRuntime()));
-		runtime ??= create().catch((error: unknown) => {
-			runtime = undefined;
-			throw error;
-		});
-		const ready = await runtime;
-		if (!current(job)) return;
 		const prefix = job.ctx.sessionManager.getBranch();
 		const segment = prefix.slice(0, prefix.findIndex((entry) => entry.id === job.anchor) + 1);
 		const refs = evidence(segment);
@@ -299,7 +339,8 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		);
 		const freshActiveSource = (id: number, ref: string) => isAfter(sourceOrder, ref, activeCutoffs.get(id));
 		const result = await (options.run ?? runPrivateInquiry<Choice[]>)({
-			runtime: ready,
+			runtime: acquireRuntime,
+			wholeAttemptLimit: WHOLE_ATTEMPT_LIMIT,
 			fork: {
 				parent: job.ctx.sessionManager,
 				parentProviderRegistry: job.ctx.modelRegistry,
@@ -338,11 +379,26 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 					activeCutoffs,
 					freshActiveSource,
 				),
-			correction: (error) => `No result was accepted: ${error}. Return a complete corrected result.`,
+			correction: (error) =>
+				`No result was accepted: ${error}. Call write alone to write the complete corrected object at the designated result path below; do not submit a text reply.`,
+			onResponse: ({ attempt, outcome }) => {
+				if (outcome.kind !== "invalid" || attempt >= INVALID_ATTEMPT_LIMIT || !current(job)) return;
+				warn(
+					`TODO audit: answer ${attempt}/${INVALID_ATTEMPT_LIMIT} invalid; retrying.\n${noticeLine(outcome.error)}`,
+				);
+			},
 		});
-		if (result.kind === "decision") settle(job, result.decision, sourceOrder);
-		else if (result.kind !== "cancelled" && current(job))
-			throw new Error("Private TODO review did not produce an accepted decision.");
+		if (!current(job) || result.kind === "cancelled") return;
+		if (result.kind === "decision") {
+			settle(job, result.decision, sourceOrder);
+			return;
+		}
+		const h = history();
+		for (const id of job.ids) {
+			const version = h.items.get(id)?.revision;
+			if (version) retry.set(overdueKey(id, version), { loops: h.loops, workMs: clock.at() });
+		}
+		warn(failureNotice(result.error, result.session));
 	}
 
 	function pump() {
@@ -352,13 +408,8 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 			running.set(key, job);
 			void reflect(job)
 				.catch(() => {
-					if (!current(job)) return;
-					const h = history();
-					for (const id of job.ids) {
-						const version = h.items.get(id)?.revision;
-						if (version) retry.set(overdueKey(id, version), { loops: h.loops, workMs: clock.at() });
-					}
-					warn("TODO audit: private review failed; no unverified result was applied.");
+					if (current(job))
+						warn("TODO audit could not finish processing; check the persisted board before retrying.");
 				})
 				.finally(() => {
 					running.delete(key);

@@ -1,7 +1,8 @@
+import { writeFile } from "node:fs/promises";
 import { fauxProvider } from "@earendil-works/pi-ai";
 import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import { createMockCtx, createMockPi } from "@juicesharp/rpiv-test-utils";
-import type { PrivateInquiryOptions, PrivateRuntime } from "pi-extension-utils/private-inquiry";
+import type { PrivateChildSession, PrivateInquiryInput, PrivateRuntime } from "pi-extension-utils/private-inquiry";
 import { afterEach, expect, it, vi } from "vitest";
 import { evictSession, getState, replaceState } from "../state/store.ts";
 import type { Task } from "../tool/types.ts";
@@ -22,19 +23,19 @@ const keep = (id: number, sources: string[] = []) => ({
 
 const unverified = (id: number, reason: string) => ({ id, kind: "unverified", reason, sources: [] });
 
-function harness(enabled = true) {
+function harness(enabled = true, liveRuntime?: () => Promise<PrivateRuntime>) {
 	const branch: SessionEntry[] = [];
 	const sid = "audit-test";
 	let id = 0;
 	let working = false;
 	let workMs = 0;
-	let answer: (options: PrivateInquiryOptions<Choice[]>) => unknown | Promise<unknown> = () => undefined;
+	let answer: (options: PrivateInquiryInput<Choice[]>) => unknown | Promise<unknown> = () => undefined;
 	const activity = createActivityDomain({});
 	const createRuntime = vi.fn<() => Promise<PrivateRuntime>>(async () => ({
 		fork: vi.fn().mockRejectedValue(new Error("Unexpected native call in scripted-decision test")),
 		dispose: vi.fn(),
 	}));
-	const run = vi.fn(async (opts: PrivateInquiryOptions<Choice[]>) => {
+	const run = vi.fn(async (opts: PrivateInquiryInput<Choice[]>) => {
 		opts.prompt("result.json");
 		if (!opts.isCurrent()) return { kind: "cancelled" as const };
 		const verdict = opts.validate(await answer(opts));
@@ -61,8 +62,8 @@ function harness(enabled = true) {
 		enabled,
 		now: () => workMs,
 		activity: Object.assign(activity, { open: async () => {}, close: async () => {} }),
-		createRuntime,
-		run,
+		createRuntime: liveRuntime ?? createRuntime,
+		...(liveRuntime === undefined ? { run } : {}),
 	});
 	const emit = async (name: string, ev = {}) => {
 		for (const handle of captured.events.get(name) ?? []) await handle(ev, ctx);
@@ -137,6 +138,103 @@ function harness(enabled = true) {
 }
 
 afterEach(() => vi.useRealTimers());
+
+it.each([false, true])("recovers setup and corrects text in one child; receipt failure=%s", async (failReceipt) => {
+	const prompts: string[] = [];
+	const createRuntime = vi.fn<() => Promise<PrivateRuntime>>();
+	const fork = vi.fn<PrivateRuntime["fork"]>();
+	const h = harness(true, createRuntime);
+	fork.mockImplementation(async ({ resultFile }) => {
+		const messages: unknown[] = [];
+		return {
+			sessionId: "retry-winning-child",
+			messages,
+			async prompt(text: string) {
+				prompts.push(text);
+				if (prompts.length === 2) {
+					await writeFile(
+						resultFile,
+						JSON.stringify({
+							items: [
+								keep(1, [h.lastReport()]),
+								{
+									id: 2,
+									kind: "update",
+									reason: "Task #2 waits for #1.",
+									sources: [h.lastReport()],
+									patch: { status: "pending", addBlockedBy: [1] },
+								},
+							],
+						}),
+					);
+				}
+				messages.push({ role: "assistant", stopReason: "stop" });
+			},
+			abort: async () => {},
+			dispose: async () => {},
+		} as unknown as PrivateChildSession;
+	});
+	createRuntime.mockRejectedValueOnce(new Error("transient setup")).mockResolvedValue({ fork, dispose() {} });
+	try {
+		await h.start();
+		if (failReceipt)
+			vi.mocked(h.pi.sendMessage).mockImplementationOnce(() => {
+				throw new Error("receipt unavailable");
+			});
+		h.board([row(1, "in_progress"), row(2)]);
+		await h.loop();
+		h.board([row(1, "in_progress"), row(2, "in_progress")]);
+		await h.loop("Task #1 is debugging fixtures; Task #2 waits for #1 before testing.");
+		await vi.waitFor(() => expect(h.pi.sendMessage).toHaveBeenCalledOnce());
+		expect(h.state().tasks[1]).toMatchObject({ status: "pending", blockedBy: [1] });
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]).toContain("Call write alone");
+		expect(fork).toHaveBeenCalledOnce();
+		expect(createRuntime).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(h.ctx.ui.notify).mock.calls.filter(([text]) => text.includes("invalid; retrying"))).toEqual([
+			[expect.stringContaining("answer 1/3"), "warning"],
+		]);
+		expect(vi.mocked(h.pi.sendMessage).mock.calls[0]?.[1]).toMatchObject({ triggerTurn: false });
+	} finally {
+		await h.close();
+	}
+});
+
+it.each(["loops", "work time"])("reports final setup failure once and honors backoff by %s", async (threshold) => {
+	const createRuntime = vi
+		.fn<() => Promise<PrivateRuntime>>()
+		.mockRejectedValue(new Error("provider setup unavailable"));
+	const h = harness(true, createRuntime);
+	try {
+		await h.start();
+		h.board([row(1)]);
+		if (threshold === "work time") await h.startWork();
+		for (let index = 0; index < 31; index++) await h.loop();
+		await vi.waitFor(() => expect(h.ctx.ui.notify).toHaveBeenCalledOnce());
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringMatching(/after 3 attempts[\s\S]*provider setup unavailable[\s\S]*No private session/),
+			"warning",
+		);
+		expect(createRuntime).toHaveBeenCalledTimes(3);
+		expect(h.pi.sendMessage).not.toHaveBeenCalled();
+		if (threshold === "loops") {
+			for (let index = 0; index < 9; index++) await h.loop();
+		} else {
+			h.advance(59_999);
+		}
+		await h.command("todo-audit");
+		expect(createRuntime).toHaveBeenCalledTimes(3);
+		if (threshold === "loops") await h.loop();
+		else {
+			h.advance(1);
+			await h.command("todo-audit");
+		}
+		await vi.waitFor(() => expect(h.ctx.ui.notify).toHaveBeenCalledTimes(2));
+		expect(createRuntime).toHaveBeenCalledTimes(6);
+	} finally {
+		await h.close();
+	}
+});
 
 it("writes a private result through the board once, keeps siblings with reasons, and does not wake the agent", async () => {
 	const h = harness();
