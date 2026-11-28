@@ -77,11 +77,11 @@
 		"pi-extension-utils"
 	],
 	"allowScripts": {
-		"github:xz-dev/pi-extension-utils#113337fbad6d816522fd032f416dc7d011d55170": true
+		"github:xz-dev/pi-extension-utils#487105a6e90d08fdf06523470362f8dbf2669761": true
 	},
 	"dependencies": {
 		"@juicesharp/rpiv-config": "^2.15.0",
-		"pi-extension-utils": "github:xz-dev/pi-extension-utils#113337fbad6d816522fd032f416dc7d011d55170",
+		"pi-extension-utils": "github:xz-dev/pi-extension-utils#487105a6e90d08fdf06523470362f8dbf2669761",
 		"private-inquiry-subagents-runtime": "github:nicobailon/pi-subagents#312082429bda07714fe0fe7729fe8d4935de4c5a"
 	},
 	"engines": {

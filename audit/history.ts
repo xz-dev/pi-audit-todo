@@ -17,10 +17,13 @@ export interface ItemRevision extends Baseline {
 	task: Task;
 	revision: string;
 	created: string;
+	activeSince?: string;
+	activeCutoff?: string;
 }
 export interface Reviewed extends Baseline {
 	id: number;
 	revision: string;
+	evidenceCutoff?: string;
 }
 export interface History extends Baseline {
 	items: Map<number, ItemRevision>;
@@ -63,19 +66,26 @@ export function replayAudit(entries: readonly SessionEntry[]): History {
 			}
 			if (entry.customType === REVIEW_ENTRY && Array.isArray(entry.data)) {
 				for (const review of entry.data) {
+					const item = review && out.items.get(review.id);
 					if (
-						review &&
+						item &&
 						count(review.id) &&
-						typeof review.revision === "string" &&
+						item.revision === review.revision &&
 						count(review.loops) &&
-						count(review.workMs) &&
-						out.items.get(review.id)?.revision === review.revision
+						count(review.workMs)
 					) {
 						out.reviews.set(review.id, {
 							...review,
 							loops: Math.min(out.loops, review.loops),
 							workMs: Math.min(out.workMs, review.workMs),
 						});
+						if (item.activeSince !== undefined) {
+							// Legacy reviews have no anchor; their receipt is a conservative cutoff.
+							out.items.set(review.id, {
+								...item,
+								activeCutoff: typeof review.evidenceCutoff === "string" ? review.evidenceCutoff : entry.id,
+							});
+						}
 					}
 				}
 			}
@@ -110,6 +120,10 @@ export function replayAudit(entries: readonly SessionEntry[]): History {
 							task,
 							created: prior?.created ?? entry.id,
 							revision: entry.id,
+							...(task.status === "in_progress" && {
+								activeSince: prior?.activeSince ?? entry.id,
+								activeCutoff: prior?.activeCutoff,
+							}),
 							loops: out.loops,
 							workMs: out.workMs,
 						},
@@ -118,6 +132,14 @@ export function replayAudit(entries: readonly SessionEntry[]): History {
 		for (const id of out.reviews.keys()) if (!out.items.has(id)) out.reviews.delete(id);
 	}
 	return out;
+}
+
+export function activeEvidenceAfter(item: ItemRevision, order: ReadonlyMap<string, number>): string | undefined {
+	if (item.activeSince === undefined) return undefined;
+	if (item.activeCutoff === undefined) return order.has(item.activeSince) ? item.activeSince : undefined;
+	const start = order.get(item.activeSince);
+	const cutoff = order.get(item.activeCutoff);
+	return start !== undefined && cutoff !== undefined && cutoff >= start ? item.activeCutoff : undefined;
 }
 
 export function activeIds(history: History): number[] {

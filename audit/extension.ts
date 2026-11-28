@@ -1,6 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { probePiAgentState } from "pi-extension-utils/pi-agent-state";
-import { captureAnchor, type PrivateRuntime, runPrivateInquiry } from "pi-extension-utils/private-inquiry";
+import {
+	captureAnchor,
+	INVALID_ATTEMPT_LIMIT,
+	type PrivateRuntime,
+	type PrivateSessionEvidence,
+	runPrivateInquiry,
+} from "pi-extension-utils/private-inquiry";
 import { getState, sid } from "../state/store.ts";
 import { commitTodo } from "../todo.ts";
 import { sanitizeTerminalText } from "../tool/sanitize.ts";
@@ -8,6 +15,7 @@ import type { Task } from "../tool/types.ts";
 import { createActivityDomain, WorkClock } from "./activity.ts";
 import { type Choice, evidence, makePrompt, parseChoices } from "./decision.ts";
 import {
+	activeEvidenceAfter,
 	activeIds,
 	CLOCK_ENTRY,
 	dueItems,
@@ -26,6 +34,7 @@ const RECEIPT = "pi-audit-todo";
 const RETRY_WORK_MS = 60_000;
 const MAX_RUNNING = 2;
 const MAINTENANCE_BATCH = 16;
+const WHOLE_ATTEMPT_LIMIT = 3;
 const domain = createActivityDomain();
 const participants = new Set<object>();
 let root: object | undefined;
@@ -53,6 +62,11 @@ function sameIds(a: readonly number[], b: readonly number[]): boolean {
 	return a.length === b.length && a.every((id) => b.includes(id));
 }
 
+function isAfter(order: ReadonlyMap<string, number>, ref: string, boundary?: string): boolean {
+	const index = boundary === undefined ? undefined : order.get(boundary);
+	return index !== undefined && (order.get(ref) ?? -1) > index;
+}
+
 function changes(before: Task | undefined, after: Task | undefined): string {
 	if (!before || !after) return "changed";
 	const fields: string[] = [];
@@ -67,6 +81,26 @@ function changes(before: Task | undefined, after: Task | undefined): string {
 		);
 	}
 	return fields.join("; ") || "updated";
+}
+
+function noticeLine(text: string): string {
+	return truncateToWidth(sanitizeTerminalText(text).trim(), Math.max(1, (process.stdout.columns || 80) - 2));
+}
+
+function failureNotice(error: string, session: PrivateSessionEvidence | undefined): string {
+	const detail = sanitizeTerminalText(error).trim();
+	const path = session?.kind === "available" ? session.path : undefined;
+	const evidence =
+		path && sanitizeTerminalText(path) === path
+			? `Private session JSONL retained: ${path}`
+			: session?.kind === "unavailable" && session.reason === "no-session"
+				? "No private session was created."
+				: `Private session evidence unavailable${session?.kind === "unavailable" ? ` (${session.reason})` : ""}.`;
+	return [
+		`TODO audit: private review failed after ${WHOLE_ATTEMPT_LIMIT} attempts; no unverified result was applied.`,
+		...(detail ? [noticeLine(`Last error: ${detail}`)] : []),
+		evidence,
+	].join("\n");
 }
 
 /** The only parent write path is the board owner's synchronous tool commit lane. */
@@ -106,7 +140,28 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		return !!failure && h.loops - failure.loops < 10 && clock.at() - failure.workMs < RETRY_WORK_MS;
 	};
 	const disabled = () => options.enabled === false || process.env.PI_AUDIT_TODO_DISABLE === "1";
-	const warn = (message: string) => ctx?.ui.notify(message, "warning");
+	const warn = (message: string) => {
+		try {
+			ctx?.ui.notify(message, "warning");
+		} catch {
+			// A notification failure cannot change board or retry authority.
+		}
+	};
+
+	function acquireRuntime(): Promise<PrivateRuntime> {
+		if (runtime) return runtime;
+		const create =
+			options.createRuntime ??
+			(() => import("private-inquiry-subagents-runtime/watchdog-runtime").then((m) => m.createWatchdogRuntime()));
+		const acquiring = Promise.resolve()
+			.then(create)
+			.catch((error: unknown) => {
+				if (runtime === acquiring) runtime = undefined;
+				throw error;
+			});
+		runtime = acquiring;
+		return acquiring;
+	}
 
 	function retire() {
 		clearTimeout(deadline);
@@ -150,7 +205,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		}
 	}
 
-	function settle(job: Job, decisions: Choice[]) {
+	function settle(job: Job, decisions: Choice[], sourceOrder: ReadonlyMap<string, number>) {
 		const snapshot = history();
 		if (!current(job, snapshot)) return;
 		const coversCohort = job.parallel === undefined || sameIds(job.ids, activeIds(snapshot));
@@ -160,7 +215,8 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 				job.ids.every((id) => snapshot.items.get(id)?.revision === job.history.items.get(id)?.revision));
 		const originalBoard = getState(sid(job.ctx));
 		const lines: string[] = [];
-		const accepted: number[] = [];
+		const accepted = new Set<number>();
+		const activeKeeps = new Set<number>();
 		const applied = new Set<number>();
 		for (const choice of decisions) {
 			const before = snapshot.items.get(choice.id);
@@ -179,8 +235,21 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 				continue;
 			}
 			const reason = sanitizeTerminalText(choice.reason).replace(/\s+/g, " ");
+			if (choice.kind === "unverified") {
+				lines.push(`#${choice.id} unverified: ${reason}`);
+				continue;
+			}
 			if (choice.kind === "keep") {
-				accepted.push(choice.id);
+				if (before.task.status === "in_progress") {
+					// Compare against the live cutoff within this fork's frozen prefix.
+					const cutoff = activeEvidenceAfter(before, sourceOrder);
+					if (!choice.sources.some((ref) => isAfter(sourceOrder, ref, cutoff))) {
+						lines.push(`#${choice.id} unverified: newer review already covers this evidence.`);
+						continue;
+					}
+					activeKeeps.add(choice.id);
+				}
+				accepted.add(choice.id);
 				lines.push(`#${choice.id} kept: ${reason}`);
 				continue;
 			}
@@ -204,7 +273,7 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 					continue;
 				}
 				applied.add(choice.id);
-				accepted.push(choice.id);
+				accepted.add(choice.id);
 				lines.push(
 					`#${choice.id} ${changes(
 						before.task,
@@ -218,13 +287,15 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 		if (applied.size)
 			void refresh().catch(() => warn("TODO audit updated the board, but its panel could not be refreshed."));
 		const final = history();
-		const reviews: Reviewed[] = accepted.flatMap((id) => {
+		const reviews: Reviewed[] = [...accepted].flatMap((id) => {
 			const item = final.items.get(id);
-			return item ? [{ id, revision: item.revision, loops: final.loops, workMs: clock.at() }] : [];
+			if (!item) return [];
+			const evidenceCutoff = activeKeeps.has(id) ? job.anchor : (item.activeCutoff ?? item.activeSince);
+			return [{ id, revision: item.revision, loops: final.loops, workMs: clock.at(), evidenceCutoff }];
 		});
 		for (const id of job.ids) {
 			const version = final.items.get(id)?.revision;
-			if (version && !accepted.includes(id))
+			if (version && !accepted.has(id))
 				retry.set(overdueKey(id, version), { loops: final.loops, workMs: clock.at() });
 		}
 		try {
@@ -255,22 +326,21 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 
 	async function reflect(job: Job) {
 		if (!current(job)) return;
-		const create =
-			options.createRuntime ??
-			(() => import("private-inquiry-subagents-runtime/watchdog-runtime").then((m) => m.createWatchdogRuntime()));
-		runtime ??= create().catch((error: unknown) => {
-			runtime = undefined;
-			throw error;
-		});
-		const ready = await runtime;
-		if (!current(job)) return;
 		const prefix = job.ctx.sessionManager.getBranch();
 		const segment = prefix.slice(0, prefix.findIndex((entry) => entry.id === job.anchor) + 1);
 		const refs = evidence(segment);
 		const sourceOrder = new Map(segment.map((entry, index) => [entry.id, index]));
 		const board = [...job.history.items.values()].map((item) => item.task);
+		const activeCutoffs = new Map(
+			job.ids.flatMap((id) => {
+				const item = job.history.items.get(id);
+				return item?.task.status === "in_progress" ? [[id, activeEvidenceAfter(item, sourceOrder)] as const] : [];
+			}),
+		);
+		const freshActiveSource = (id: number, ref: string) => isAfter(sourceOrder, ref, activeCutoffs.get(id));
 		const result = await (options.run ?? runPrivateInquiry<Choice[]>)({
-			runtime: ready,
+			runtime: acquireRuntime,
+			wholeAttemptLimit: WHOLE_ATTEMPT_LIMIT,
 			fork: {
 				parent: job.ctx.sessionManager,
 				parentProviderRegistry: job.ctx.modelRegistry,
@@ -283,11 +353,14 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 			signal: job.abort.signal,
 			isCurrent: () => current(job),
 			validate: (value) => {
-				const choices = parseChoices(value, job.ids, board, refs, (id, ref) => {
-					const created = job.history.items.get(id)?.created;
-					const origin = created ? sourceOrder.get(created) : undefined;
-					return origin !== undefined && (sourceOrder.get(ref) ?? -1) > origin;
-				});
+				const choices = parseChoices(
+					value,
+					job.ids,
+					board,
+					refs,
+					(id, ref) => isAfter(sourceOrder, ref, job.history.items.get(id)?.created),
+					freshActiveSource,
+				);
 				return choices
 					? { valid: true, value: choices }
 					: {
@@ -303,12 +376,29 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 						? "These TODO items need periodic maintenance."
 						: `Activity #${job.parallel} became active with ${job.ids.length} concurrent entries. Account for the entire active set.`,
 					refs,
+					activeCutoffs,
+					freshActiveSource,
 				),
-			correction: (error) => `No result was accepted: ${error}. Return a complete corrected result.`,
+			correction: (error) =>
+				`No result was accepted: ${error}. Call write alone to write the complete corrected object at the designated result path below; do not submit a text reply.`,
+			onResponse: ({ attempt, outcome }) => {
+				if (outcome.kind !== "invalid" || attempt >= INVALID_ATTEMPT_LIMIT || !current(job)) return;
+				warn(
+					`TODO audit: answer ${attempt}/${INVALID_ATTEMPT_LIMIT} invalid; retrying.\n${noticeLine(outcome.error)}`,
+				);
+			},
 		});
-		if (result.kind === "decision") settle(job, result.decision);
-		else if (result.kind !== "cancelled" && current(job))
-			throw new Error("Private TODO review did not produce an accepted decision.");
+		if (!current(job) || result.kind === "cancelled") return;
+		if (result.kind === "decision") {
+			settle(job, result.decision, sourceOrder);
+			return;
+		}
+		const h = history();
+		for (const id of job.ids) {
+			const version = h.items.get(id)?.revision;
+			if (version) retry.set(overdueKey(id, version), { loops: h.loops, workMs: clock.at() });
+		}
+		warn(failureNotice(result.error, result.session));
 	}
 
 	function pump() {
@@ -318,13 +408,8 @@ export function installTodoAudit(pi: ExtensionAPI, refresh: () => Promise<void>,
 			running.set(key, job);
 			void reflect(job)
 				.catch(() => {
-					if (!current(job)) return;
-					const h = history();
-					for (const id of job.ids) {
-						const version = h.items.get(id)?.revision;
-						if (version) retry.set(overdueKey(id, version), { loops: h.loops, workMs: clock.at() });
-					}
-					warn("TODO audit: private review failed; no unverified result was applied.");
+					if (current(job))
+						warn("TODO audit could not finish processing; check the persisted board before retrying.");
 				})
 				.finally(() => {
 					running.delete(key);
