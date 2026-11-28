@@ -129,6 +129,30 @@ theorem activeReviewIsCorrect (fence : WriteFence) (previous : ActiveCheckpoint)
 
 #print axioms activeReviewIsCorrect
 
+-- The whole-attempt gate cannot grant another child after acceptance or revocation.
+inductive WholeReviewResult where
+  | accepted | failed | cancelled
+  deriving DecidableEq
+
+def mayReplaceReview (current : Bool) (attempt : Nat) (result : WholeReviewResult) : Bool :=
+  current && decide (attempt < 3) && decide (result = .failed)
+
+-- Replacement inherits unused evidence instead of receiving a new allowance.
+def remainingEvidence (spent : Nat) : Nat := 4 - spent
+
+theorem retryReviewIsCorrect (attempt : Nat) :
+    mayReplaceReview false attempt .failed = false ∧
+    mayReplaceReview true attempt .accepted = false ∧
+    mayReplaceReview true attempt .cancelled = false ∧
+    mayReplaceReview true 3 .failed = false ∧
+    mayReplaceReview true 2 .failed = true ∧
+    remainingEvidence 3 = 1 := by
+  simp [mayReplaceReview, remainingEvidence]
+
+#print axioms retryReviewIsCorrect
+
 end TodoReview
 
-def main : IO Unit := IO.println "TODO maintenance: fresh evidence renews; stale or unverified reviews do not; confirmed pauses move to pending."
+def main : IO Unit := do
+  IO.println "TODO maintenance: fresh evidence renews; stale or unverified reviews do not; confirmed pauses move to pending."
+  IO.println "Private review: three whole attempts share four evidence calls; only acceptance may hand off."

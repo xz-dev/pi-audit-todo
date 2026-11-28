@@ -23,6 +23,8 @@ Working time is not wall-clock age. It runs while the main session or a particip
 
 The reviewer reads the parent’s effective session context in a private fork. It can make a bounded number of read-only evidence lookups and submit a structured result, but cannot execute the work or write the parent board directly. The parent compares branch, board generation, and item revisions before applying any update. It then reports **what was actually changed**, kept with a reason, or skipped. The changelog enters the original conversation as plugin feedback, not as instructions or user approval. It does not start a new turn.
 
+A text-only reply, wrong tool, or invalid result is corrected in the same child, with up to three answers per child. If the whole attempt fails, the audit immediately retries from its original snapshot, at most twice. All children share four read-only evidence calls; the result write does not consume that budget. Native provider retries are separate. Cancellation stops retries, and a failed attempt never writes the board. If all attempts fail, the audit reports the last error and the final child's verified session path when available, then applies its existing backoff.
+
 ## Active, paused, and unverified tasks
 
 - **Keep `in_progress`** while someone is actually working on the item. Debugging a failing test or observing an ongoing test run counts; waiting for a fixture without doing more work does not.
